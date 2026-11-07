@@ -264,6 +264,12 @@ static uint64_t row_obj(const lock_t *L) {
 static int floor_max(const lock_t *L) {
     uint64_t obj = row_obj(L); int32_t mx;
     if (!obj || !rd(obj + L->field + 4, &mx, sizeof mx) || mx < 1 || mx > 60) return 0;
+    if (mx > 2) {
+        mx = 2;   // clamp controller maximum interval to 2 (30 fps floor) to avoid 20 fps hysteresis lock
+        int32_t *p = (int32_t *)(uintptr_t)(obj + L->field + 4);
+        dm_guest_write_prepare(p, sizeof *p);
+        __atomic_store_n(p, mx, __ATOMIC_RELAXED);
+    }
     return mx;
 }
 // Whether a row can hold cap t: its kind's rates (rate_ok), and for a floor no more vsyncs than the controller's own maximum (while that is unknown, the write waits for it)
