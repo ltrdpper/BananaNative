@@ -7,6 +7,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <limits.h>
+#if defined(__linux__)
+#include <sys/auxv.h>
+#endif
 #include "hle.h"
 
 module_t *g_mod;
@@ -716,7 +719,19 @@ static uint8_t *slurp(const char *path, size_t *n) {
 // valid. The cold PAC instructions stay in crash.c's SIGILL path -- the register
 // forms as NOPs, PACGA computed, since it produces a value and has no
 // single-instruction stand-in.
+//
+// A host that implements PAC must keep them: PACIBSP signs x30 there, and RET
+// would branch to that signed pointer (SIGSEGV at a garbage PC right after the
+// game's first call; seen on a Snapdragon 8 Gen 2 with this patch unconditional)
+static int host_has_pac(void) {
+#if defined(__linux__) && defined(__aarch64__)
+    return (getauxval(AT_HWCAP) & (1u << 30)) != 0;   // HWCAP_PACA
+#else
+    return 1;   // Apple silicon implements PAC; the x86 Mac build never runs guest ARM code
+#endif
+}
 static void pac_patch_text(module_t *m) {
+    if (host_has_pac()) return;
     uint32_t *w = (uint32_t *)m->base;
     const size_t n = (size_t)(m->text_end / 4);
     size_t cnt = 0;
