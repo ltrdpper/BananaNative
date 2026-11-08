@@ -70,7 +70,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 
                 GotoElimination.Eliminate(context.GetGotos());
 
-                AstOptimizer.Optimize(context, targetLanguage);
+                AstOptimizer.Optimize(context);
 
                 context.LeaveFunction();
             }

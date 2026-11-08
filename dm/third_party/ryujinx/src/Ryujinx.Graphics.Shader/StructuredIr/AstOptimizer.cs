@@ -1,5 +1,4 @@
 using Ryujinx.Graphics.Shader.IntermediateRepresentation;
-using Ryujinx.Graphics.Shader.Translation;
 using System.Collections.Generic;
 using System.Linq;
 
@@ -9,7 +8,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
 {
     static class AstOptimizer
     {
-        public static void Optimize(StructuredProgramContext context, TargetLanguage targetLanguage)
+        public static void Optimize(StructuredProgramContext context)
         {
             AstBlock mainBlock = context.CurrentFunction.MainBlock;
 
@@ -25,16 +24,12 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                     {
                         bool isWorthPropagating = propVar.Uses.Count == 1 || IsWorthPropagating(assignment.Source);
 
-                        // Banana Native: a source with side effects is never propagated: its assignment stays (below), so a copy at the use ran it twice
-                        // (nx2android c6b211c: Pokémon Legends: Z-A's culling compute shaders did each warp's atomic add twice, and the GPU time grew every frame)
-                        if (propVar.Defs.Count == 1 && isWorthPropagating && !HasSideEffects(assignment.Source))
+                        if (propVar.Defs.Count == 1 && isWorthPropagating)
                         {
                             PropagateExpression(propVar, assignment.Source);
                         }
 
-                        // Banana Native: not when the source has side effects: an atomic whose result is never read went with its assignment (nx2android 44eca7e:
-                        // Tears of the Kingdom's visibility counter lost its add, and geometry went missing)
-                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0 && !HasSideEffects(assignment.Source))
+                        if (propVar.Type == OperandType.LocalVariable && propVar.Uses.Count == 0)
                         {
                             visitor.Block.Remove(assignment);
 
@@ -44,18 +39,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                 }
             }
 
-            RemoveEmptyBlocks(mainBlock, targetLanguage);
-        }
-
-        private static bool HasSideEffects(IAstNode source)
-        {
-            return source is AstOperation operation && (operation.Inst & Instruction.Mask) switch
-            {
-                Instruction.AtomicAdd or Instruction.AtomicAnd or Instruction.AtomicCompareAndSwap or Instruction.AtomicMaxS32 or Instruction.AtomicMaxU32 or
-                Instruction.AtomicMinS32 or Instruction.AtomicMinU32 or Instruction.AtomicOr or Instruction.AtomicSwap or Instruction.AtomicXor or
-                Instruction.Call or Instruction.ImageAtomic => true,
-                _ => false,
-            };
+            RemoveEmptyBlocks(mainBlock);
         }
 
         private static bool IsWorthPropagating(IAstNode source)
@@ -100,7 +84,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
             }
         }
 
-        private static void RemoveEmptyBlocks(AstBlock mainBlock, TargetLanguage targetLanguage)
+        private static void RemoveEmptyBlocks(AstBlock mainBlock)
         {
             Queue<AstBlock> pending = new();
 
@@ -145,9 +129,7 @@ namespace Ryujinx.Graphics.Shader.StructuredIr
                         parent.Remove(block);
                     }
                 }
-                // Banana Native: not for SPIR-V. Its generator branches from an If only into an Else that follows it (SpirvGenerator's BlockEntered), never into an ElseIf,
-                // so the else-if's whole branch became unreachable code (nx2android 02e336f: Xenoblade Chronicles 3's cloud shaders lost a loop's exit and the GPU was reset)
-                else if (targetLanguage != TargetLanguage.Spirv && isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
+                else if (isIf && parent.Type == AstBlockType.Else && parent.Count == (hasElse ? 2 : 1))
                 {
                     AstBlock parentOfParent = parent.Parent;
 
