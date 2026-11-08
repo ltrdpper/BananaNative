@@ -504,3 +504,50 @@ dumps/<game>-shaders/lib`, and push `dumps/<game>-shaders/lib/v-6847ec0acc39/` i
 Backups: `ltrdpper/BananaNative` on GitHub (fork made before the deletion) and
 `HDD5/Buckets/banananative-backup-2026-11-08/` on the Pi (bundle of every ref, 26 PR patches,
 the deployed APK).
+
+## 16. v0.2.4 merged, all four libraries built, Ocarina on the Thor (2026-11-08, night)
+
+Upstream published 26 more commits while the first v0.2.1 libraries were building: v0.2.3 (FSR 1,
+frame pacing, pointer authentication emulation **with the `dm_host_has_pac` gate** our #88 report
+asked for, Mario Kart World's memory-map abort) and v0.2.4, plus PRs #7, #8, #9, #12, #15 and #32
+(guest memory through exported FDs on drivers without placed maps, AIBinder stub for Qualcomm
+891.x). They do not change `DMSH_CHAIN` (`6eaf449c7ce1`). Merged into `android-v020` as `d0417e0b`;
+the only conflict was the `MainActivity` settings-row field list (both sides added rows).
+
+`vk_android_build.py` itself changed upstream, and our non-Mac check is a change to it, so the
+tools digest moved `0035e16073bf` -> `874cdbe93ff8`. Rather than rebuild, `vk_android_same.tsv`
+maps that digest to our `6847ec0acc39` after a **full MKW rebuild with the merged tools came out
+byte-identical** (`sha256 1b4afa9f…e3d1`), which is what that table is for.
+
+Libraries on chain `6eaf449c7ce1` / vk `6847ec0acc39`:
+
+| game | shaders | library | build |
+|---|---|---|---|
+| Pokopia | 131,410 of 131,426 | 5.6 GB, 176,715 modules | ~9 h (with DKB/MKW running alongside) |
+| DKB | 22,852 | 259 MB | 9 min |
+| MKW | 11,603 | 132 MB | 5 min |
+| Ocarina of Time | 42,837 of 42,848 | 680 MB | 35 min |
+
+Pushed as `shaders/v-6847ec0acc39/` into each pack; the previous chain's `v-31b81e5c07ac` stays
+for rolling back to the `deployed-thor-20261108` APK.
+
+**Pipeline cache after a library change.** The driver cache is stamped with the shader library,
+and a new library makes it invalid: the first Pokopia run after the chain change reported
+`pipeline cache … is not stamped with its shader library: 0 bytes read` and spent 52 s building
+413 graphics + 42 compute pipelines (compute ones 1.2-3.7 s each on Turnip T30), which is what the
+stutter was. The second launch read 17.4 MB back (314 shaders, 0 stale) and built 12 pipelines.
+
+**Game cards.** The icon, version and publisher come from the `.nup` meta block (`Nup.gameMeta`), so
+a folder dump shows none: pushing `Pokemon-Pokopia.nup` to `/sdcard/Switch2/` gave Pokopia its
+cover. That file's meta block carries only the icon, so its version/publisher stay blank (DKB's and
+MKW's carry all three).
+
+**Ocarina of Time.** Its `main` is ZBIC-compressed, so `shader_split.py` and `pack_android.py` need
+`DM_ZBIC_LIB` (built with `dm/third_party/zstd-zbic/build.sh /tmp/libzbicdec.so cc`) or the `zbic`
+pip package; Python 3.14 here had no pip, `get-pip.py --user --break-system-packages` fixes that
+(also needed for `capstone` and `lz4` by the packer). The pack is 782 MB
+(`dumps/0400486024DEC000-work/android-pack`) and the game reads its RomFS from the 25.6 GB `.nup`
+in place, so that file has to be on the device too.
+
+Cleanup done on the Thor: pipeline caches of the other drivers (Mainline v32, Mesa v26) and logs
+beyond the newest three were removed; the old chain library was kept.
