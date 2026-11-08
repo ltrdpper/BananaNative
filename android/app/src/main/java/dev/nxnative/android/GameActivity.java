@@ -433,6 +433,10 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             // mode that give that size (graphics_scale rows), as its profile says (Profile.resolutionEnv); nothing for a game with neither
             Profile prof = Profile.of(id);
             if (prof != null) env.addAll(prof.resolutionEnv(Prefs.gameWindow(this, id)));
+            {   // Time of day (the launcher's System › Time of day): the host's DM_TIME, so a game with a day/night cycle can be started at a chosen time
+                String tod = Prefs.timeOverride(this);
+                if (!tod.isEmpty()) env.add("DM_TIME=" + tod);
+            }
             Lsfg.env(this, env);   // frame generation: the user's Lossless.dll and the settings
             Fsr.env(this, env);   // FSR 1 upscaling (the in-game panel)
             int cap = Prefs.fpsCap(this, id);   // the game's own frame rate cap (its in-game panel, its Game settings), else the main screen's (unset: the profile's fps_target)
