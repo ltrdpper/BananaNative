@@ -46,16 +46,18 @@ final class GameLanguage {
         return code;
     }
 
-    /** The DM_LANG line for a choice (null: the phone's language; else a code of CODES), null when nothing is set (the phone's language has no console code) */
+    /** Our default game language, used when the game has no choice of its own: Italian, whatever the phone is set to */
+    static final String DEFAULT = "it";
+
+    /** The DM_LANG line for a choice (null: our default, Italian; else a code of CODES) */
     static String env(String choice, String phoneTag) {
-        String c = choice != null ? choice : code(phoneTag);
+        String c = choice != null ? choice : DEFAULT;
         return c == null ? null : "DM_LANG=" + c;
     }
 
     /** The setting's value line: "Phone's language · French", "Phone's language · none, English (US)", or the chosen language */
     static String label(String choice, String phoneTag) {
         if (choice != null) return name(choice);
-        String c = code(phoneTag);
-        return "Phone's language · " + (c != null ? name(c) : "not a console language, so English (US)");
+        return name(DEFAULT) + " · default";
     }
 }
