@@ -292,6 +292,7 @@ void vka_tex_feedback(vka_img *const *ims, const uint32_t *levels, int n);   // 
 int vka_tex_id_in_pass(int id);   // texture ID id's image is an attachment of the open pass (vka_tex_feedback's set)
 int vka_tex_id_target(int id);                      // the NVN target texture ID id stands for (its view's), -1 = not registered
 int vka_tex_id_pending(int id);                     // texture ID id is registered and its image is not made yet (its first use records commands)
+VkBufferView vka_tex_id_tbuf(int id, uint8_t dim);   // texture ID id as the uniform texel buffer a tbuf slot binds (an NVN TARGET_BUFFER texture's guest storage); VK_NULL_HANDLE = none
 VkImageView vka_tex_id_view_rec(int id, VkCommandBuffer cb, uint8_t dim, int storage, VkImageLayout *layout);   // the same on the recording thread, through a memo (DM_VK_TEX_MEMO)
 int vka_tex_id_pending_rec(int id, uint8_t dim);
 int vka_tex_id_storage_pending(int id);            // texture ID id's image exists without storage use and would be remade with it at its next storage binding (a draw ends its pass first)

@@ -647,11 +647,16 @@ static int stage_writes(const vka_dstate *d, int st, const vka_shader *sh, const
             *ii = (VkDescriptorImageInfo){s, v, lay};
             w->pImageInfo = ii; if (g_prof) { g_ps[4] += cntvct() - ti_; g_ps[5]++; }
             break; }
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-            if (r[i].what != VKA_R_NULL) VRED_ONCE("texel buffers are not on Vulkan yet (shader %016llx binding %u): bound as null", (unsigned long long)sh->key, r[i].binding);
-            if (!V.null_desc) { VRED_ONCE("a texel buffer binding and no null descriptors: the draw is skipped"); return 0; }
-            g_w.bv[k] = VK_NULL_HANDLE; w->pTexelBufferView = &g_w.bv[k];
-            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            // A tbuf slot: the NVN TARGET_BUFFER texture's guest storage as a VkBufferView (vka_tex_id_tbuf). A storage texel buffer is not produced by
+            // the translator yet; a null it leaves unbound reads as zero, as does a texture whose storage is not one placed range
+            VkBufferView bv = VK_NULL_HANDLE;
+            if (r[i].what == VKA_R_TBUF) bv = vka_tex_id_tbuf(r[i].tid, r[i].dim);
+            else if (r[i].what != VKA_R_NULL) VRED_ONCE("shader %016llx binding %u: %s in a texel buffer slot", (unsigned long long)sh->key, r[i].binding,
+                                                        r[i].desc == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER ? "a storage texel buffer" : "a binding that is not a buffer texture");
+            if (!bv && !V.null_desc) { VRED_ONCE("an unbound texel buffer and no null descriptors: the draw is skipped"); return 0; }
+            g_w.bv[k] = bv; w->pTexelBufferView = &g_w.bv[k];
+            break; }
         default: VRED_ONCE("descriptor type %u in a binding record", r[i].desc); return 0;
         }
         g_w.n++;
