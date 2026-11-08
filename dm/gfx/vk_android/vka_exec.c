@@ -481,7 +481,12 @@ static void clear_color(const p_clear_color *c) {
     VkRect2D rc; int part = scissored(im, lv, &rc);
     if (!rc.extent.width) return;
     vka_fmt fl = f; fl.srgb = 0;   // in a pass the attachment is the sRGB view: the clear colour stays linear there
-    vka_pclear pc = {c->index, im, f.vk, VK_IMAGE_ASPECT_COLOR_BIT, lv, l0, nl, rc, !part, {.color = color_value(&f, c->rgba)}, {.color = color_value(&fl, c->rgba)}};
+    // DM_VK_CLEAR_TEST=1: every colour clear becomes magenta, so a region that stays black afterwards is drawn (by something painting black) and a
+    // magenta one is not drawn at all — how the sky's missing draws were told apart from its clear
+    int clear_test = VKA_ENV("DM_VK_CLEAR_TEST", 0) != 0;   // a clear is rare enough to read the switch here (live)
+    const float *rgba = c->rgba; float mag[4] = {1, 0, 1, 1};
+    if (clear_test) rgba = mag;
+    vka_pclear pc = {c->index, im, f.vk, VK_IMAGE_ASPECT_COLOR_BIT, lv, l0, nl, rc, !part, {.color = color_value(&f, rgba)}, {.color = color_value(&fl, rgba)}};
     vka_img_written(im); g_stat_ops++;
     if (!clear_in_pass(&pc)) vka_clear_outside(&pc);
 }

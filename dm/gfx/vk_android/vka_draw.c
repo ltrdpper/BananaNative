@@ -973,7 +973,6 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
         if (!ind && inst_n <= 1) { int32_t c = dw ? dw->count : di->count; g_claim_words = c > 0 ? (uint32_t)c : 1; }
         else VRED_ONCE("geometry shader %016llx writes memory in an %s draw: drawn without the claim, its writes repeated by the device's runs of each primitive", (unsigned long long)sh[2]->key, ind ? "indirect" : "instanced");
     }
-    if (expand && ind) SKIP("an indirect draw of quads or a line loop is not on Vulkan yet: skipped");
 
     PT(1);
     // The last draw's shaders' layout (layouts live as long as the device): the layout table's lock and hash a draw
@@ -1135,17 +1134,28 @@ void vka_draw(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_scissor *sc
         vk.vkCmdDrawMeshTasksEXT(g_cb, (uint32_t)dw->count, 1, 1);
     } else if (expand) {   // quads or a line loop: the indices made here, 32-bit, in scratch memory
         uint32_t count = (uint32_t)(dw ? dw->count : di->count), *src = NULL;
+        uint32_t base = dw ? (uint32_t)dw->first : 0, base_v = di ? di->base_vertex : 0, inst_n = (uint32_t)inst, binst_n = (uint32_t)binst;
+        // An indirect quad or line loop is dropped: expanding it needs the record's counts on the CPU (a queue wait for every such draw), and the one
+        // game that drew this way (Pokopia) sends a record with vertexCount 0, so nothing was lost and the wait only stalled the frame. See
+        // docs/android-thor-bringup.md §8. DM_VK_QUAD_INDIRECT=1 reads the record instead (zero counts are drawn as nothing, same as the device)
+        if (ind) {
+            if (VKA_ENV("DM_VK_QUAD_INDIRECT", 0)) {
+                uint32_t rec[4];
+                if (!cpu_read(ind, rec, sizeof rec)) SKIP("an indirect draw of quads: its arguments at %#llx are not readable: skipped", (unsigned long long)ind);
+                count = rec[0]; inst_n = rec[1]; base = rec[2]; binst_n = rec[3]; base_v = 0;
+            } else SKIP("an indirect draw of quads or a line loop is not on Vulkan yet: skipped (DM_VK_QUAD_INDIRECT=1 reads the record)");
+        }
         if (di && !(src = read_indices(di->ibuf, di->itype, count))) SKIP("indices at %#llx are not readable: the draw is skipped", (unsigned long long)di->ibuf);
         uint32_t nout = expand == 1 ? count / 4 * 6 : count + 1; vka_span s;
         if (!nout || !vka_scratch(4 * (VkDeviceSize)nout, 4, &s)) { free(src); return; }
-        uint32_t *o = (uint32_t *)s.ptr, base = dw ? (uint32_t)dw->first : 0;
+        uint32_t *o = (uint32_t *)s.ptr;
         #define IX(i) (src ? src[i] : base + (i))
         if (expand == 1) for (uint32_t q = 0; q < count / 4; q++) { static const uint8_t t[6] = {0, 1, 2, 0, 2, 3}; for (int j = 0; j < 6; j++) o[6 * q + j] = IX(4 * q + t[j]); }
         else { for (uint32_t i = 0; i < count; i++) o[i] = IX(i); o[count] = IX(0); }
         #undef IX
         free(src);
         ib_bind(s.buf, s.off, VK_INDEX_TYPE_UINT32);
-        vk.vkCmdDrawIndexed(g_cb, nout, inst, 0, di ? di->base_vertex : 0, binst);
+        vk.vkCmdDrawIndexed(g_cb, nout, inst_n, 0, base_v, binst_n);
     } else if (dw) {
         if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 16, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
                    VRED_ONCE("indirect draws: the driver segment's base instance (c0 + 0x644) reads the record's, not the GPU's"); vk.vkCmdDrawIndirect(g_cb, b, o, 1, 16); }
@@ -1208,9 +1218,11 @@ void vka_dispatch(vka_dstate *d, const p_dispatch *dp) {
     }
     // DM_VK_DISPATCH_LOG=1: one line per dispatch (its index in the submission's run of dispatches since the last log reset, key, groups, workgroup, shared memory, flags);
     // DM_VK_DISPATCH_SKIP=<from>[,<to>]: dispatches from..to (default: to the end) are recorded without their vkCmdDispatch, to find the one that writes a wrong picture
-    uint64_t vka_frame(void); static unsigned long long nd; static uint64_t fr = ~0ull; static int lg; if (vka_frame() != fr) { fr = vka_frame(); lg = (int)VKA_ENV("DM_VK_DISPATCH_LOG", 0); nd = 0; }
-    unsigned long long di = nd++; const char *sk = getenv("DM_VK_DISPATCH_SKIP"); int skip = 0;
-    if (sk && *sk) { char *e; unsigned long long a = strtoull(sk, &e, 10), b = *e == ',' ? strtoull(e + 1, NULL, 10) : ~0ull; skip = di >= a && di <= b; }
+    uint64_t vka_frame(void); static unsigned long long nd; static uint64_t fr = ~0ull; static int lg; static char skbuf[64];
+    if (vka_frame() != fr) { fr = vka_frame(); lg = (int)VKA_ENV("DM_VK_DISPATCH_LOG", 0); nd = 0;   // the skip range is a string, read once a frame, not with a getenv per dispatch
+        const char *e = getenv("DM_VK_DISPATCH_SKIP"); snprintf(skbuf, sizeof skbuf, "%s", e ? e : ""); }
+    unsigned long long di = nd++; int skip = 0;
+    if (*skbuf) { char *e; unsigned long long a = strtoull(skbuf, &e, 10), b = *e == ',' ? strtoull(e + 1, NULL, 10) : ~0ull; skip = di >= a && di <= b; }
     if (lg) VLOG("dispatch %llu: %016llx groups %d,%d,%d%s local %u,%u,%u shared %u flags %#x%s", di, (unsigned long long)sh[5]->key, dp->x, dp->y, dp->z, dp->ind ? " (indirect)" : "",
                  sh[5]->e->local[0], sh[5]->e->local[1], sh[5]->e->local[2], sh[5]->e->shared, sh[5]->e->flags, skip ? " SKIPPED" : "");
     if (skip) { vka_barrier(g_cb); g_dispatches++; return; }
@@ -1220,7 +1232,11 @@ void vka_dispatch(vka_dstate *d, const p_dispatch *dp) {
         if (sb && (uint64_t)dp->x * dp->y * dp->z > ns) spill_dispatch((uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z, ns);
         else vk.vkCmdDispatch(g_cb, (uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z);
     }
-    vka_barrier(g_cb);   // (also frees the shared memory spill buffer for the next dispatch)
+    // DM_VK_BAR_DISPATCH=0 (default 1): no full memory barrier after every dispatch. The game's own barriers still order what it declares; this one only covers the
+    // replay's assumption that every op is ordered after the previous, and on Turnip a full barrier costs about as much as a small dispatch (Pokopia: 24 dispatches a
+    // frame, 21 ms of GPU timeline with it, 6 ms without). A dispatch that spilled its shared memory keeps the barrier: it also frees the spill buffer
+    static int bar_dispatch = -1; if (bar_dispatch < 0) bar_dispatch = VKA_ENV("DM_VK_BAR_DISPATCH", 1) != 0;
+    if (bar_dispatch || sb) vka_barrier(g_cb);
     g_dispatches++;
 }
 void vka_draw_stats(uint64_t *draws, uint64_t *skipped, uint64_t *dispatches, uint64_t *pipelines) {
