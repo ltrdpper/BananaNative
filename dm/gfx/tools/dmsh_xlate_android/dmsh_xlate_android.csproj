@@ -18,10 +18,17 @@
     <PublishAotUsingRuntimePack>true</PublishAotUsingRuntimePack>
     <InvariantGlobalization>true</InvariantGlobalization>
     <UseSystemResourceKeys>true</UseSystemResourceKeys>
+    <!-- System.Text.Json's JsonNode output needs reflection metadata; NativeAOT trims it by default, which made the phone
+         fail 80k shaders with NotSupportedException: NoMetadataForType (Pokopia). Keep the metadata in the Android build. -->
+    <JsonSerializerIsReflectionEnabledByDefault>true</JsonSerializerIsReflectionEnabledByDefault>
+    <IlcGenerateCompleteTypeMetadata>true</IlcGenerateCompleteTypeMetadata>
     <!-- CS0436: Sha256.cs's System.Security.Cryptography.SHA256 replaces the framework's on purpose -->
     <NoWarn>$(NoWarn);CS0436</NoWarn>
     <RyuSrc Condition="'$(RyuSrc)' == ''">$(MSBuildThisFileDirectory)../../../third_party/ryujinx</RyuSrc>
   </PropertyGroup>
+  <ItemGroup>
+    <TrimmerRootAssembly Include="System.Text.Json" />
+  </ItemGroup>
   <ItemGroup>
     <Compile Include="../dmsh_xlate/Program.cs" />
     <Compile Include="Sha256.cs" />
