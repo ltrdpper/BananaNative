@@ -173,8 +173,12 @@ def check_translator(xlate=None):
             got = tree if t.returncode == 0 and tree else f'unknown (no --tree-sha: exit code {t.returncode}, a library from before it)'
             bad.append(f'translator library: built from source tree {got}, this tree is {xlate_tree.sha()} (dmsh_xlate_android/build.sh builds it again)')
         return bad
-    bad = [f'{dll}: lock {want.get(dll)} / actual {tool_lock.sha16(os.path.join(dmsh_chain.XLATE_DIR, dll))}' for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll')
-           if tool_lock.sha16(os.path.join(dmsh_chain.XLATE_DIR, dll)) != want.get(dll)]
+    # The dll fingerprints in the lock are of the Mac builds (the apphost there is Mach-O). A translator built elsewhere from the
+    # same sources has different managed dll bytes but the same code: its embedded source digest, which is part of the chain version
+    # and of every shader's cache key, is what checks it here (a Linux host building a library).
+    bad = [] if sys.platform != 'darwin' else \
+        [f'{dll}: lock {want.get(dll)} / actual {tool_lock.sha16(os.path.join(dmsh_chain.XLATE_DIR, dll))}' for dll in ('dmsh_xlate.dll', 'Ryujinx.Graphics.Shader.dll', 'Ryujinx.Common.dll')
+         if tool_lock.sha16(os.path.join(dmsh_chain.XLATE_DIR, dll)) != want.get(dll)]
     emb = tool_lock.xlate_embedded()
     if emb.startswith(tool_lock.NO_RUN): bad.append(tool_lock.no_run_message(emb))
     elif emb != want.get('xlate_source') or emb != dmsh_chain.xlate_source_sha(): bad.append(f'translator source: embedded {emb} / lock {want.get("xlate_source")} / in repo {dmsh_chain.xlate_source_sha()}')

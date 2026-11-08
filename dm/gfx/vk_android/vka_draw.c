@@ -1132,11 +1132,16 @@ static int stage_writes(const vka_dstate *d, int st, const vka_shader *sh, const
             *ii = (VkDescriptorImageInfo){s, v, lay};
             w->pImageInfo = ii; if (g_prof) { g_ps[4] += cntvct() - ti_; g_ps[5]++; }
             break; }
-        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER:
-            if (r[i].what != VKA_R_NULL) VRED_ONCE("texel buffers are not on Vulkan yet (shader %016llx binding %u): bound as null", (unsigned long long)sh->key, r[i].binding);
-            if (!V.null_desc) { VRED_ONCE("a texel buffer binding and no null descriptors: the draw is skipped"); return 0; }
-            g_w.bv[k] = VK_NULL_HANDLE; w->pTexelBufferView = &g_w.bv[k];
-            break;
+        case VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER: case VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER: {
+            // A tbuf slot: the NVN TARGET_BUFFER texture's guest storage as a VkBufferView (vka_tex_id_tbuf). A storage texel buffer is not produced by
+            // the translator yet; a null it leaves unbound reads as zero, as does a texture whose storage is not one placed range
+            VkBufferView bv = VK_NULL_HANDLE;
+            if (r[i].what == VKA_R_TBUF) bv = vka_tex_id_tbuf(r[i].tid, r[i].dim);
+            else if (r[i].what != VKA_R_NULL) VRED_ONCE("shader %016llx binding %u: %s in a texel buffer slot", (unsigned long long)sh->key, r[i].binding,
+                                                        r[i].desc == VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER ? "a storage texel buffer" : "a binding that is not a buffer texture");
+            if (!bv && !V.null_desc) { VRED_ONCE("an unbound texel buffer and no null descriptors: the draw is skipped"); return 0; }
+            g_w.bv[k] = bv; w->pTexelBufferView = &g_w.bv[k];
+            break; }
         default: VRED_ONCE("descriptor type %u in a binding record", r[i].desc); return 0;
         }
         g_w.n++;
@@ -1697,7 +1702,6 @@ static void draw_body(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_sci
         if (!ind && inst_n <= 1) { int32_t c = dw ? dw->count : di->count; g_claim_words = c > 0 ? (uint32_t)c : 1; }
         else VRED_ONCE("geometry shader %016llx writes memory in an %s draw: drawn without the claim, its writes repeated by the device's runs of each primitive", (unsigned long long)sh[2]->key, ind ? "indirect" : "instanced");
     }
-    if (expand && ind) SKIP("an indirect draw of quads or a line loop is not on Vulkan yet: skipped");
 
     PT(1);
     // The last draw's shaders' layout (layouts live as long as the device): the layout table's lock and hash a draw
@@ -1932,17 +1936,28 @@ static void draw_body(vka_dstate *d, const p_set_rt *rt, int has_rt, const p_sci
         }
     } else if (expand) {   // quads or a line loop: the indices made here, 32-bit, in scratch memory
         uint32_t count = (uint32_t)(dw ? dw->count : di->count), *src = NULL;
+        uint32_t base = dw ? (uint32_t)dw->first : 0, base_v = di ? di->base_vertex : 0, inst_n = (uint32_t)inst, binst_n = (uint32_t)binst;
+        // An indirect quad or line loop is dropped: expanding it needs the record's counts on the CPU (a queue wait for every such draw), and the one
+        // game that drew this way (Pokopia) sends a record with vertexCount 0, so nothing was lost and the wait only stalled the frame. See
+        // docs/android-thor-bringup.md §8. DM_VK_QUAD_INDIRECT=1 reads the record instead (zero counts are drawn as nothing, same as the device)
+        if (ind) {
+            if (VKA_ENV("DM_VK_QUAD_INDIRECT", 0)) {
+                uint32_t rec[4];
+                if (!cpu_read(ind, rec, sizeof rec)) SKIP("an indirect draw of quads: its arguments at %#llx are not readable: skipped", (unsigned long long)ind);
+                count = rec[0]; inst_n = rec[1]; base = rec[2]; binst_n = rec[3]; base_v = 0;
+            } else SKIP("an indirect draw of quads or a line loop is not on Vulkan yet: skipped (DM_VK_QUAD_INDIRECT=1 reads the record)");
+        }
         if (di && !(src = read_indices(di->ibuf, di->itype, count))) SKIP("indices at %#llx are not readable: the draw is skipped", (unsigned long long)di->ibuf);
         uint32_t nout = expand == 1 ? count / 4 * 6 : count + 1; vka_span s;
         if (!nout || !vka_scratch(4 * (VkDeviceSize)nout, 4, &s)) { free(src); return; }
-        uint32_t *o = (uint32_t *)s.ptr, base = dw ? (uint32_t)dw->first : 0;
+        uint32_t *o = (uint32_t *)s.ptr;
         #define IX(i) (src ? src[i] : base + (i))
         if (expand == 1) for (uint32_t q = 0; q < count / 4; q++) { static const uint8_t t[6] = {0, 1, 2, 0, 2, 3}; for (int j = 0; j < 6; j++) o[6 * q + j] = IX(4 * q + t[j]); }
         else { for (uint32_t i = 0; i < count; i++) o[i] = IX(i); o[count] = IX(0); }
         #undef IX
         free(src);
         ib_bind(s.buf, s.off, VK_INDEX_TYPE_UINT32);
-        vk.vkCmdDrawIndexed(g_cb, nout, inst, 0, di ? di->base_vertex : 0, binst);
+        vk.vkCmdDrawIndexed(g_cb, nout, inst_n, 0, base_v, binst_n);
     } else if (dw) {
         if (ind) { VkBuffer b; VkDeviceSize o; if (!vka_addr(ind, 16, &b, &o, NULL) || (o & 3)) SKIP("indirect draw arguments at %#llx are not in placed guest RAM: skipped", (unsigned long long)ind);
                    VRED_ONCE("indirect draws: outside vertex shaders, the driver segment's base instance (c0 + 0x644) reads the record's, not the GPU's"); vk.vkCmdDrawIndirect(g_cb, b, o, 1, 16); }
@@ -2089,7 +2104,10 @@ void vka_dispatch(vka_dstate *d, const p_dispatch *dp) {
         if (sb && (uint64_t)dp->x * dp->y * dp->z > ns) spill_dispatch((uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z, ns);
         else vk.vkCmdDispatch(g_cb, (uint32_t)dp->x, (uint32_t)dp->y, (uint32_t)dp->z);
     }
-    vka_barrier(g_cb);   // (also frees the shared memory spill buffer for the next dispatch)
+    // DM_VK_BAR_DISPATCH=0 (default 1): no full memory barrier after every dispatch, which on Turnip costs about a small dispatch (Pokopia: 24 a frame,
+    // 21 ms of GPU timeline with it, 6 ms without); a dispatch that spilled its shared memory keeps the barrier, it frees the spill buffer
+    static int bar_dispatch = -1; if (bar_dispatch < 0) bar_dispatch = VKA_ENV("DM_VK_BAR_DISPATCH", 1) != 0;
+    if (bar_dispatch || sb) vka_barrier(g_cb);
     vka_rw_point(g_cb, 'd', sh[5]->key, 0, 0);
     if (vka_nan_on()) {   // DM_VK_NANSCAN: the storage images this dispatch wrote
         vka_img *ims[32]; int m = 0;

@@ -2450,6 +2450,74 @@ vka_img *vka_cap_shared(const tex_t *t) {
     pthread_mutex_unlock(&g_tmu);
     return im;
 }
+// ---------- Buffer textures (NVN TARGET_BUFFER): a tbuf slot is a uniform texel buffer ----------
+// NVN lets a shader texelFetch a TARGET_BUFFER texture; the translator marks such a binding tbuf (UNIFORM_TEXEL_BUFFER, dim 5) and the Mac binds a
+// texture-buffer view over the pool memory (nvn_mtl.m, target 10). Here the texels are the texture's guest storage too: a VkBufferView over the placed
+// pool memory the texture lives in, made once per texture and sampled type. A texture that is not in one placed range, whose offset is not a multiple
+// of its element, or whose format has no texel-buffer form for the shader's sampled type reads as unbound (one [RED] line each). DM_VK_TBUF=0: null.
+static VkFormatFeatureFlags buf_feats(VkFormat f) {
+    static struct { VkFormat f; VkFormatFeatureFlags ff; } cache[64]; static int n;
+    for (int i = 0; i < n; i++) if (cache[i].f == f) return cache[i].ff;
+    VkFormatProperties p; vk.vkGetPhysicalDeviceFormatProperties(V.pd, f, &p);
+    if (n < 64) { cache[n].f = f; cache[n].ff = p.bufferFeatures; return cache[n++].ff; }
+    return p.bufferFeatures;
+}
+// A same-size format of the shader's sampled type, for a texture format the driver does not take as a texel buffer (its values are then read as bits)
+static VkFormat tbuf_alias(int cls, int bpb) {
+    switch (bpb) {
+    case 1: return cls == 1 ? VK_FORMAT_R8_UINT : cls == 2 ? VK_FORMAT_R8_SINT : VK_FORMAT_R8_UNORM;
+    case 2: return cls == 1 ? VK_FORMAT_R16_UINT : cls == 2 ? VK_FORMAT_R16_SINT : VK_FORMAT_R16_UNORM;
+    case 4: return cls == 1 ? VK_FORMAT_R32_UINT : cls == 2 ? VK_FORMAT_R32_SINT : VK_FORMAT_R32_SFLOAT;
+    case 8: return cls == 1 ? VK_FORMAT_R32G32_UINT : cls == 2 ? VK_FORMAT_R32G32_SINT : VK_FORMAT_R32G32_SFLOAT;
+    case 16: return cls == 1 ? VK_FORMAT_R32G32B32A32_UINT : cls == 2 ? VK_FORMAT_R32G32B32A32_SINT : VK_FORMAT_R32G32B32A32_SFLOAT;
+    default: return VK_FORMAT_UNDEFINED;
+    }
+}
+typedef struct { uint64_t serial, buf, off, range; VkFormat fmt; VkBufferView v; } tbuf_ent;
+static tbuf_ent g_tbuf[512]; static int g_ntbuf;   // (recording thread only; a pool reused at the same address gives a new VkBuffer, so a stale entry is never a hit)
+VkBufferView vka_tex_id_tbuf(int id, uint8_t dim) {
+    if (id <= 0 || !VKA_ENV("DM_VK_TBUF", 1)) return VK_NULL_HANDLE;
+    int cls = (dim & DMSH_VK_DIM_SINT) ? 2 : (dim & DMSH_VK_DIM_UINT) ? 1 : 0;   // the sampled type the shader declares
+    pthread_mutex_lock(&g_tmu);
+    if (id >= g_ntreg || !g_treg[id].t.serial) { pthread_mutex_unlock(&g_tmu); return VK_NULL_HANDLE; }
+    treg_ent e = g_treg[id];
+    pthread_mutex_unlock(&g_tmu);
+    int target = e.has_v && e.v.set_target ? e.v.target : e.t.d.target;
+    if (target != NVN_TEXTURE_TARGET_BUFFER || !e.t.mem || treg_dead(id, &e)) return VK_NULL_HANDLE;
+    int nf = e.has_v && e.v.set_format ? e.v.format : e.t.d.format, bw, bh, bpb = nvn_fmt_bpb(nf, &bw, &bh);
+    vka_fmt f;
+    if (!bpb || !vka_fmt_of(nf, &f)) { static _Atomic int n1; if (atomic_fetch_add(&n1, 1) < 8) VRED("buffer texture ID %d: format %#x has no Vulkan form", id, nf); return VK_NULL_HANDLE; }
+    int kind = f.kind == 1 ? 1 : f.kind == 2 ? 2 : 0;
+    if (kind != cls) { static _Atomic int n2; if (atomic_fetch_add(&n2, 1) < 8) VRED("buffer texture ID %d format %#x (VkFormat %d): the shader samples it as %s", id, nf, f.vk, cls == 1 ? "uint" : cls == 2 ? "sint" : "float"); return VK_NULL_HANDLE; }
+    VkFormat vf = f.vk;
+    if (!(buf_feats(vf) & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT)) {
+        VkFormat al = tbuf_alias(cls, bpb);
+        if (al == VK_FORMAT_UNDEFINED || !(buf_feats(al) & VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT)) {
+            static _Atomic int n3; if (atomic_fetch_add(&n3, 1) < 8) VRED("buffer texture ID %d format %#x (VkFormat %d): no texel-buffer form for its sampled type", id, nf, vf); return VK_NULL_HANDLE; }
+        static _Atomic int n4; if (atomic_fetch_add(&n4, 1) < 8) VLOG("buffer texture ID %d format %#x (VkFormat %d) as its %d-byte alias VkFormat %d", id, nf, vf, bpb, al);
+        vf = al;
+    }
+    uint32_t nel = e.t.d.width ? e.t.d.width : 1;
+    VkDeviceSize range = (VkDeviceSize)nel * bpb, cap = (VkDeviceSize)V.props.limits.maxTexelBufferElements * bpb;
+    if (range > cap) { static _Atomic int n5; if (atomic_fetch_add(&n5, 1) < 8) VRED("buffer texture ID %d: %u elements past the device's %u: read only up to there", id, nel, (unsigned)V.props.limits.maxTexelBufferElements); range = cap; }
+    VkBuffer b; VkDeviceSize off;
+    nvn_pool_use(1);
+    int ok = vka_addr((uint64_t)(uintptr_t)e.t.mem, range, &b, &off, NULL);
+    nvn_pool_use(0);
+    if (!ok || off % bpb) { static _Atomic int n6; if (atomic_fetch_add(&n6, 1) < 8)
+        VRED("buffer texture ID %d serial %llu: its %llu bytes at %p are %s: it reads as unbound", id, (unsigned long long)e.t.serial, (unsigned long long)range, (void *)e.t.mem,
+             !ok ? "not one placed range of one memory pool" : "at an offset that is not a multiple of their element"); return VK_NULL_HANDLE; }
+    for (int i = 0; i < g_ntbuf; i++) if (g_tbuf[i].serial == e.t.serial && g_tbuf[i].buf == (uint64_t)b && g_tbuf[i].off == off && g_tbuf[i].range == range && g_tbuf[i].fmt == vf) return g_tbuf[i].v;
+    VkBufferViewCreateInfo bi = {VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO, .buffer = b, .format = vf, .offset = off, .range = range};
+    VkBufferView v = VK_NULL_HANDLE;
+    if (vk.vkCreateBufferView(V.dev, &bi, NULL, &v)) {
+        static _Atomic int n7; if (atomic_fetch_add(&n7, 1) < 8) VRED("buffer texture ID %d: vkCreateBufferView failed (VkFormat %d, offset %llu, range %llu)", id, vf, (unsigned long long)off, (unsigned long long)range); return VK_NULL_HANDLE; }
+    static _Atomic int n8; if (atomic_fetch_add(&n8, 1) < 8)
+        VLOG("buffer texture: ID %d serial %llu %u elements format %#x (VkFormat %d), pool offset %llu: view made", id, (unsigned long long)e.t.serial, nel, nf, vf, (unsigned long long)off);
+    if (g_ntbuf < 512) g_tbuf[g_ntbuf++] = (tbuf_ent){e.t.serial, (uint64_t)b, off, range, vf, v};   // ponytail: never pruned; a game has a handful of buffer textures
+    return v;
+}
+
 // ---------- CPU texel reads (nvnTextureReadTexels; the Mac's is mtl_read_texels in nvn_mtl.m) ----------
 // The game reads a texture's texels into its own memory. Two sources:
 // - the GPU never wrote it: its guest storage holds the content, read (and de-swizzled) there;
