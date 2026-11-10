@@ -551,3 +551,47 @@ in place, so that file has to be on the device too.
 
 Cleanup done on the Thor: pipeline caches of the other drivers (Mainline v32, Mesa v26) and logs
 beyond the newest three were removed; the old chain library was kept.
+
+## 17. v0.2.7 merged, selected Pokopia build, old chains removed (2026-11-10)
+
+Upstream published 31 more commits (v0.2.5-0.2.7): band-granular texture re-uploads and WriteTexels
+subregions, dirty-page tracking that follows mprotect, mem_map_limit for every game, movies on
+their own decode thread (AV1 on the phone's decoder), one prewarm compile at a time, a cached
+present format query, a held early ANativeWindow surface, gyro start after the first resume, 480p,
+MKW update dumps, and translator fixes found on Ocarina.
+
+Chains: `1cf10a4252df` (translator, upstream) and `d99b8cfa5ad7` (Vulkan; upstream's is
+`643797bdfbd9`, ours differs only by the non-Mac translator check). Libraries rebuilt for all four
+games, then all older chain dirs removed from the packs.
+
+**Pokopia no longer builds 131k shaders.** The profile has a selected set (`shader_seen.tsv`,
+8,164 lines) and a key-list build translates only those plus their paired pixel shaders:
+
+```sh
+DM_GAME=0400A3A01EE4C000 XLATE=/tmp/xlate-v027/dmsh_xlate SPIRV_VAL=/usr/bin/spirv-val J=32 \
+  python3 dm/gfx/tools/vk_android_build.py --target vulkan dumps/pokopia-shaders/pkg dumps/pokopia-shaders/lib \
+  $(python3 - <<'PY'   # shader_seen keys + their paired pixel shaders (dmsh_build.build_keys)
+...
+PY
+)
+```
+
+Result: 8,161 shaders, 9,945 modules, 228 MB, `--check` clean, in about 30 minutes instead of 9
+hours. `pack_android.py` still builds the full set on the host (it passes no key list); the phone's
+Prepare passes the selection itself.
+
+| game | shaders | library | notes |
+|---|---|---|---|
+| Pokopia | 8,161 (selected) | 228 MB | profile inputs unchanged |
+| DKB | 22,852 | 216 MB | |
+| MKW | 11,603 | 109 MB | |
+| Ocarina of Time | 42,848 | 714 MB | profile tables changed (inputs `0a7aeafde2d0`): re-split from the nup, `DM_ZBIC_LIB` again |
+
+Deployment: APK built from `bd023503` (branch head) with four profiles; `shaders/v-d99b8cfa5ad7/`
+pushed into each pack; `v-6847ec0acc39` and `v-31b81e5c07ac` removed from the device. The old
+`v-31b81e5c07ac` library was first pulled to `dumps/old-chain/0400A3A01EE4C000/`, so the archived
+`deployed-thor-20261108` APK can still be rolled back to.
+
+Cleanup: per-chain `results/` build caches and the old Ocarina split package deleted on the host;
+device logs trimmed to the newest three; `/sdcard/Switch2/{pokopia,dkb}` extracted folders had
+already gone (the packs read their ROMFS from the `.nup`s).
