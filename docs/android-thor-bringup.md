@@ -595,3 +595,207 @@ pushed into each pack; `v-6847ec0acc39` and `v-31b81e5c07ac` removed from the de
 Cleanup: per-chain `results/` build caches and the old Ocarina split package deleted on the host;
 device logs trimmed to the newest three; `/sdcard/Switch2/{pokopia,dkb}` extracted folders had
 already gone (the packs read their ROMFS from the `.nup`s).
+
+## 18. Redoing this: merge upstream, rebuild on this host, deploy (runbook)
+
+Everything below was done on aurora (this container) on 2026-11-08..11. Paths are the ones this
+tree uses. The repositories: `origin` = `https://git.eden-emu.dev/moceure/BananaNative.git` (the
+project moved there from GitHub on 2026-11-08; its history was rewritten, so a merge, not a rebase),
+`mr` = `git@github-banananative:ltrdpper/BananaNative.git` (our push target, key
+`~/.ssh/banananative`). Work happens on branch `android-v020` in `/config/Projects/bn-v020`.
+
+### 18.1 What we carry on top of upstream
+
+Only these; everything else upstream has:
+
+| change | where |
+|---|---|
+| buffer textures as uniform texel buffers (tbuf slot → `VkBufferView`) | `dm/gfx/vk_android/vka_tex.c`, `vka.h`, `vka_draw.c` |
+| time-of-day setting (`DM_TIME`, `DM_TZ`, `DM_TIME_OFFSET`) | `hle_time.c`, `main.c`, launcher java |
+| indirect quads / line loops from their record (`DM_VK_QUAD_INDIRECT`), `DM_VK_CLEAR_TEST` | `vka_draw.c`, `vka_exec.c` |
+| Italian as the default game language | `GameLanguage.java` |
+| translator check by embedded source on a non-Mac host | `dm/gfx/tools/vk_android_build.py` |
+
+`DM_VK_BAR_DISPATCH` is gone: upstream now has `DM_VK_DISPATCH_ORDER` and only barriers for spills
+and the NaN scan.
+
+### 18.2 Merge
+
+```sh
+cd /config/Projects/bn-v020
+git fetch origin --tags
+git rev-list --count HEAD..origin/android          # what is new
+grep -m1 DMSH_CHAIN  <(git show origin/android:dm/gfx/nvn/dmsh_chain.h)
+grep -m1 DMSH_VK_CHAIN <(git show origin/android:dm/gfx/nvn/dmsh_chain_vk.h)
+git merge --no-edit origin/android
+```
+
+Expected conflicts, and how they were resolved:
+
+- `dm/gfx/nvn/dmsh_chain_vk.h`: take upstream's (`git checkout --theirs`), then regenerate ours in
+  18.3 (our tool edit changes the digest).
+- `dm/gfx/vk_android/vka_draw.c`: keep our tbuf case and the quad block; for the dispatch barrier
+  take upstream's side (`disp_count` + `DM_VK_DISPATCH_ORDER`), never both.
+- The launcher java (`MainActivity` field list, `GameLanguage`): keep both sides.
+
+Then commit the merge (`--no-edit`).
+
+### 18.3 Chains and the translator
+
+`DMSH_CHAIN` comes from source files only, so it changes when the translator changes. `DMSH_VK_CHAIN`
+also covers `vk_android_build.py`, `vk_android_spv.py`, `vk_android_delta.py`, `dmsh_abi_vk.h`, so
+**our non-Mac check alone makes it differ from upstream's**; that is fine, the APK and the libraries
+are built here. After the merge:
+
+```sh
+python3 dm/gfx/tools/dmsh_chain.py                  # must equal dmsh_chain.h
+python3 dm/gfx/tools/vk_android_build.py --version  # our digest
+python3 dm/gfx/tools/vk_android_build.py --header   # writes dmsh_chain_vk.h
+git commit dm/gfx/nvn/dmsh_chain_vk.h -m "tools: <release> Vulkan chain ..."
+```
+
+The Linux translator (self-contained, .NET 10 SDK in docker; no SDK on aurora):
+
+```sh
+docker run --rm -v /config/Projects/bn-v020:/w -v /tmp/opencode:/out -w /w/dm/gfx/tools/dmsh_xlate \
+  mcr.microsoft.com/dotnet/sdk:10.0 dotnet publish -c Release -r linux-x64 --self-contained true -o /out/xlate
+sudo chown -R abc:abc /tmp/opencode/xlate
+mv /tmp/opencode/xlate/dmsh_xlate /tmp/opencode/xlate/dmsh_xlate-linux
+ln -sf dmsh_xlate-linux /tmp/opencode/xlate/dmsh_xlate
+/tmp/opencode/xlate/dmsh_xlate --source-sha   # must equal dm/gfx/tools/dmsh_chain.lock's xlate_source
+```
+
+A copy of the working publish is kept at `/config/Projects/dumps/tools/xlate-v027/` (reuse it while
+`--source-sha` still matches the lock; `/tmp` is wiped between sessions). `vk_android_build.py`
+compares the embedded source digest instead of the Mac dll hashes when `sys.platform != 'darwin'`.
+`XLATE=` must be exported for `pack_android.py`, which does not pass it through otherwise.
+
+### 18.4 Rebuilding a library
+
+Only if the chain changed (the library's header records it) or a profile's `inputs` changed
+(`python3 dm/gfx/tools/dmsh_chain.py --inputs` vs the library's `inputs.tsv`). Full builds:
+
+```sh
+cd /config/Projects/bn-v020
+DM_GAME=<id> XLATE=/tmp/opencode/xlate/dmsh_xlate SPIRV_VAL=/usr/bin/spirv-val J=32 DMSH_VK_XLATE_J=32 \
+  python3 dm/gfx/tools/vk_android_build.py --target vulkan /config/Projects/dumps/<g>-shaders/pkg \
+  /config/Projects/dumps/<g>-shaders/lib
+SPIRV_VAL=/usr/bin/spirv-val J=16 python3 dm/gfx/tools/vk_android_build.py --check \
+  /config/Projects/dumps/<g>-shaders/lib/v-<CHAIN>/dmsh_vk.lib
+```
+
+| game | pkg | shaders | time (J=32) | library |
+|---|---|---|---|---|
+| Pokopia | `dumps/pokopia-shaders/pkg` | 8,161 selected | ~25 min | 228 MB |
+| DKB | `dumps/dkb-shaders/pkg` | 22,852 | ~9 min | 216 MB |
+| MKW | `dumps/mkw-shaders/pkg` | 11,603 | ~5 min | 109 MB |
+| Ocarina | `dumps/oot-shaders/pkg-v027` | 42,848 | ~35 min | 721 MB |
+
+**Pokopia is a selected build.** The profile's `shader_seen.tsv` lists the keys; pass them (plus the
+pixel shaders their `shader_pairs.tsv` pairs) as arguments. `pack_android.py` does not do this: it
+builds the full 131k set. The list is kept at `dumps/tools/pokopia-selected-keys.txt`
+(8,161 keys), generated by:
+
+```sh
+python3 - <<'PY' > /tmp/keys.txt
+import re
+prof='dm/games/0400A3A01EE4C000'
+seen={m.group(0) for ln in open(prof+'/shader_seen.tsv') if (m:=re.match(r'[0-9a-f]{16}\b',ln))}
+loc={c[3] for ln in open(prof+'/shader_map.tsv') if len(c:=ln.rstrip('\n').split('\t'))>4 and c[0].endswith('.bin')}
+pairs={}
+for ln in open(prof+'/shader_pairs.tsv'):
+    if ln.startswith('#') or '\t' not in ln: continue
+    vs,ps=ln.rstrip('\n').split('\t')[:2]; pairs.setdefault(vs,set()).add(ps)
+print(' '.join(sorted(seen|{ps for vs in seen for ps in pairs.get(vs,()) if ps in loc})))
+PY
+```
+
+If a profile's inputs changed, its package is stale: re-split with `shader_split.py` (section 13.2;
+Ocarina's `main` needs `DM_ZBIC_LIB=dumps/tools/libzbicdec.so`, built with
+`dm/third_party/zstd-zbic/build.sh <out> cc`). The map it writes must be byte-identical to the
+profile's `shader_map.tsv`.
+
+### 18.5 Packs, their shader dirs, and the launcher's bookkeeping
+
+- Each game's pack lives at `/sdcard/Switch2/<id>-work/android-pack` and is read through the
+  launcher's list in `shared_prefs/games.xml` (`<pack>` path). A pack that is not there, or an entry
+  pointing at a deleted `files/packs/<id>`, shows "new shaders: … Prepare to update them" — it is a
+  missing pack, not missing shaders.
+- A pack built from a `.nup` reads its ROMFS from the nup at run time (`pack.tsv`'s `romfs` line,
+  relative to the folder holding the nup). The nup's **file name must match** that line: the DKB
+  pack had to be edited from `Donkey Kong Banana.nup` to
+  `Donkey Kong Bananza [040074A01BF12000].nup`.
+- To make a pack on this host (needs `capstone` and `lz4`: `get-pip.py --user --break-system-packages`
+  then `pip install --user capstone lz4`; Python 3.14 has zstd built in):
+
+  ```sh
+  DM_GAME=<id> XLATE=/tmp/opencode/xlate/dmsh_xlate python3 scripts/pack_android.py <nup> \
+    --shader-cache /config/Projects/dumps/<g>-shaders/lib --shader-pkg /config/Projects/dumps/<g>-shaders/pkg \
+    -j 8 -J 8
+  ```
+
+  It reuses a current library from `--shader-cache` and copies it into the pack. Push the pack with
+  `adb push <pack>/. /sdcard/Switch2/<id>-work/android-pack/` (trailing `/.`), or only its non-shader
+  files when the library is already on the phone (the library is the big part).
+- To move a game's entry to a pack elsewhere, edit `games.xml` as the app user:
+  `adb shell "cat /sdcard/games-new.xml | run-as dev.nxnative.android sh -c 'cat > shared_prefs/games.xml'"`
+  after `adb shell am force-stop dev.nxnative.android`.
+
+### 18.6 Deploying a library and the APK
+
+```sh
+# per game, after the PKG build and --check
+adb shell mkdir -p /sdcard/Switch2/<id>-work/android-pack/shaders/v-<CHAIN>
+adb push dumps/<g>-shaders/lib/v-<CHAIN>/dmsh_vk.lib  .../shaders/v-<CHAIN>/dmsh_vk.lib
+adb push dumps/<g>-shaders/lib/v-<CHAIN>/inputs.tsv   .../shaders/v-<CHAIN>/inputs.tsv
+adb shell rm -rf .../shaders/v-<old chain>          # keep one old dir only if you keep its APK for rollback
+
+# the APK: one profile per game, simulated packer (packs are made here)
+cd /config/Projects/bn-v020/android/app
+./gradlew -PnxGames=040074A01BF12000,0400A3A01EE4C000,0400C3F00006E000,0400486024DEC000 \
+  -PnxPackEngine=fake apk
+adb install -r out/nxnative-android.apk
+```
+
+A game whose profile is not in `-PnxGames` refuses to start ("this app version does not include
+it"). Launch from a shell with the game and pack:
+
+```sh
+adb shell am start -n dev.nxnative.android/.MainActivity \
+  --es game '/storage/emulated/0/Switch2/<file>.nup' \
+  --es pack /storage/emulated/0/Switch2/<id>-work/android-pack --ez run true
+```
+
+Verify in the newest `files/logs/<id>-*.log`: `build: commit <sha>, shader chain <CHAIN>`,
+`shader library …/shaders/v-<CHAIN>/dmsh_vk.lib: N shaders`, `[vk] pace up to … fps`, no `CRASH`.
+
+**After a chain change the driver pipeline cache is invalidated** (`pipeline cache … is not stamped
+with its shader library`), so the first run compiles every pipeline (Pokopia: 52 s, compute ones
+1–4 s each). The second run reads it back and builds only what is new. Not a regression.
+
+### 18.7 adb on the Thor
+
+Wireless debugging, over aurora (`adb` lives there, not in this container):
+
+```sh
+ssh aurora 'adb mdns services'                 # the current port (changes when debug is re-enabled)
+ssh aurora 'adb connect 192.168.1.55:<port>'   # or it appears on its own as adb-…._adb-tls-connect._tcp
+```
+
+If `connect` is refused while the port is open, the host key is not accepted: accept the prompt on
+the device, or use "Pair device with pairing code" and `adb pair <ip>:<port> <code>`. Do not redirect
+into `/tmp/opencode` inside an ssh command: that path exists only in this container.
+
+### 18.8 Housekeeping
+
+- Keep the shader packages (`dumps/*-shaders/pkg`) and the built libraries; they are the expensive
+  inputs. Delete `…/lib/v-<chain>/results/` (build cache, GBs) once the library is written.
+- `git bundle create ../banananative-backup/banananative-all-refs.bundle --all` in
+  `/config/Projects/banananative` (the repo the worktree shares), then rsync it to
+  `pi:/srv/…/Buckets/banananative-backup-2026-11-08/`. It also holds `refs/forks/*`, the branches
+  recovered from 13 contributor forks when the GitHub repo vanished.
+- Old-chain libraries, once superseded, are removed from the phone; the v-31b81e5c07ac one is kept on
+  this host under `dumps/old-chain/0400A3A01EE4C000/` for the archived `deployed-thor-20261108` APK.
+- Card metadata (icon, version, publisher) comes from a `.nup` meta block only; an extracted folder
+  dump shows none, and a nup with only an icon shows only the icon (Pokopia's does, Ocarina's has no
+  image at all).
