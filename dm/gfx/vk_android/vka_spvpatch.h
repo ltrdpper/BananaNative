@@ -8,6 +8,8 @@ uint32_t *vka_spv_vin_retype(const uint32_t *w, size_t nw, uint32_t umask, uint3
 // Subgroup operations and built-ins rewritten as subgroups of one invocation, for a stage the device runs none in (vka_spvpatch.c). A malloc'd copy (*out_nw words,
 // *changed = 1), NULL with err empty when the module has none, NULL with the reason in err when it cannot be rewritten
 uint32_t *vka_spv_subgroup_single(const uint32_t *w, size_t nw, size_t *out_nw, int *changed, char *err, size_t errn);
+// 1 when module w (nw words) decorates BuiltIn SubgroupId or NumSubgroups: it addresses whole subgroups, which vka_spv_subgroup_single leaves as the device has them
+int vka_spv_subgroup_rows(const uint32_t *w, size_t nw);
 // A geometry shader's memory writes, counted (the return; -1 with err on failure) and, with out and a count above 0, the module with each of them made only by the run of
 // the shader that first claims its primitive in the storage buffer at set 0 binding (zeroed for each draw, a word per primitive), malloc'd (*out_nw words): vka_spvpatch.c
 int vka_spv_gs_claim(const uint32_t *w, size_t nw, uint32_t binding, uint32_t **out, size_t *out_nw, char *err, size_t errn);
@@ -27,6 +29,8 @@ uint32_t *vka_spv_instance(const uint32_t *w, size_t nw, uint32_t binding, uint3
 // emitted (or null when the vertex shader has none): the passthrough copies a shader translated alone lacks (vka_spvpatch.c). A malloc'd copy (*out_nw words; *copied /
 // *nulled the locations added); NULL with err empty when the pixel shader reads nothing more, NULL with the reason in err when it cannot be made
 uint32_t *vka_spv_gs_link(const uint32_t *gw, size_t gn, const uint32_t *vw, size_t vn, const uint32_t *fw, size_t fn, uint32_t *copied, uint32_t *nulled, size_t *out_nw, char *err, size_t errn);
+// A geometry shader that may emit nothing for a primitive made to emit one degenerate primitive instead (Adreno's binning pass; vka_spvpatch.c). NULL with err empty: nothing to do
+uint32_t *vka_spv_gs_fill(const uint32_t *w, size_t nw, size_t *out_nw, char *err, size_t errn);
 // A pixel shader's colour outputs: the components each location's stores can write (bit c of comp[loc]), for the colour write mask: 0, or -1 when the module is not read
 int vka_spv_fout_comps(const uint32_t *w, size_t nw, uint8_t comp[8]);
 // Texture-use feedback for the texture pool (vka_spvpatch.c vka_spv_pool_fb): before each read of the pool (a one-index access chain into the sampled-image array at set

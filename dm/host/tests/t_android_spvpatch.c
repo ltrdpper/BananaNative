@@ -1,7 +1,8 @@
 // The Android replay's SPIR-V rewrite of vertex inputs fed integer formats (dm/gfx/vk_android/vka_spvpatch.c), on the Mac: the graphics selftest's vertex shader
 // (a component read through an access chain at location 0, whole loads at location 1) retyped as uint / int, checked by structure and, when spirv-val is on the PATH,
 // by validation. DM_VK_SPV_DIR=<folder of .spv vertex modules> also rewrites each of those (every vec4 input as uint) and validates it. DM_VK_GS_SPV=<a geometry module
-// that writes memory> puts its writes under a per-primitive claim (vka_spv_gs_claim, after the one-invocation subgroup rewrite) and validates it
+// that writes memory> puts its writes under a per-primitive claim (vka_spv_gs_claim, after the one-invocation subgroup rewrite) and validates it. A small culling
+// geometry shader gets a degenerate primitive where a run emits nothing (vka_spv_gs_fill)
 #include "../../gfx/vk_android/vka_spvpatch.h"
 #include "../../gfx/vk_android/vka_selftest_spv.h"
 #include <dirent.h>
@@ -10,6 +11,48 @@
 #include <string.h>
 #include <unistd.h>
 
+// A triangle geometry shader that emits its triangle only when the first vertex's x is above 0, else nothing (assembled with spirv-as, valid for Vulkan 1.0),
+// and the same with its emits on stream 0 (GeometryStreams), which vka_spv_gs_fill leaves alone
+static const uint32_t GS_CULL[217] = {
+    0x07230203, 0x00010000, 0x00070000, 0x00000026, 0x00000000, 0x00020011, 0x00000002, 0x0003000e, 0x00000000, 0x00000001, 0x0007000f, 0x00000003,
+    0x00000001, 0x6e69616d, 0x00000000, 0x00000002, 0x00000003, 0x00030010, 0x00000001, 0x00000016, 0x00040010, 0x00000001, 0x00000000, 0x00000001,
+    0x00030010, 0x00000001, 0x0000001d, 0x00040010, 0x00000001, 0x0000001a, 0x00000003, 0x00050048, 0x00000004, 0x00000000, 0x0000000b, 0x00000000,
+    0x00030047, 0x00000004, 0x00000002, 0x00050048, 0x00000005, 0x00000000, 0x0000000b, 0x00000000, 0x00030047, 0x00000005, 0x00000002, 0x00020013,
+    0x00000006, 0x00030021, 0x00000007, 0x00000006, 0x00030016, 0x00000008, 0x00000020, 0x00040017, 0x00000009, 0x00000008, 0x00000004, 0x00040015,
+    0x0000000a, 0x00000020, 0x00000001, 0x00040015, 0x0000000b, 0x00000020, 0x00000000, 0x0003001e, 0x00000004, 0x00000009, 0x00040020, 0x0000000c,
+    0x00000003, 0x00000004, 0x0004003b, 0x0000000c, 0x00000002, 0x00000003, 0x0003001e, 0x00000005, 0x00000009, 0x0004002b, 0x0000000b, 0x0000000d,
+    0x00000003, 0x0004002b, 0x0000000b, 0x0000000e, 0x00000000, 0x0004001c, 0x0000000f, 0x00000005, 0x0000000d, 0x00040020, 0x00000010, 0x00000001,
+    0x0000000f, 0x0004003b, 0x00000010, 0x00000003, 0x00000001, 0x0004002b, 0x0000000a, 0x00000011, 0x00000000, 0x0004002b, 0x0000000a, 0x00000012,
+    0x00000001, 0x0004002b, 0x0000000a, 0x00000013, 0x00000002, 0x00040020, 0x00000014, 0x00000001, 0x00000009, 0x00040020, 0x00000015, 0x00000003,
+    0x00000009, 0x00040020, 0x00000016, 0x00000001, 0x00000008, 0x0004002b, 0x00000008, 0x00000017, 0x00000000, 0x00020014, 0x00000018, 0x00050036,
+    0x00000006, 0x00000001, 0x00000000, 0x00000007, 0x000200f8, 0x00000019, 0x00070041, 0x00000016, 0x0000001a, 0x00000003, 0x00000011, 0x00000011,
+    0x0000000e, 0x0004003d, 0x00000008, 0x0000001b, 0x0000001a, 0x000500ba, 0x00000018, 0x0000001c, 0x0000001b, 0x00000017, 0x000300f7, 0x0000001d,
+    0x00000000, 0x000400fa, 0x0000001c, 0x0000001e, 0x0000001d, 0x000200f8, 0x0000001e, 0x00060041, 0x00000014, 0x0000001f, 0x00000003, 0x00000011,
+    0x00000011, 0x0004003d, 0x00000009, 0x00000020, 0x0000001f, 0x00050041, 0x00000015, 0x00000021, 0x00000002, 0x00000011, 0x0003003e, 0x00000021,
+    0x00000020, 0x000100da, 0x00060041, 0x00000014, 0x00000022, 0x00000003, 0x00000012, 0x00000011, 0x0004003d, 0x00000009, 0x00000023, 0x00000022,
+    0x0003003e, 0x00000021, 0x00000023, 0x000100da, 0x00060041, 0x00000014, 0x00000024, 0x00000003, 0x00000013, 0x00000011, 0x0004003d, 0x00000009,
+    0x00000025, 0x00000024, 0x0003003e, 0x00000021, 0x00000025, 0x000100da, 0x000100db, 0x000200f9, 0x0000001d, 0x000200f8, 0x0000001d, 0x000100fd,
+    0x00010038};
+static const uint32_t GS_CULL_STREAM[223] = {
+    0x07230203, 0x00010000, 0x00070000, 0x00000026, 0x00000000, 0x00020011, 0x00000002, 0x00020011, 0x00000036, 0x0003000e, 0x00000000, 0x00000001,
+    0x0007000f, 0x00000003, 0x00000001, 0x6e69616d, 0x00000000, 0x00000002, 0x00000003, 0x00030010, 0x00000001, 0x00000016, 0x00040010, 0x00000001,
+    0x00000000, 0x00000001, 0x00030010, 0x00000001, 0x0000001d, 0x00040010, 0x00000001, 0x0000001a, 0x00000003, 0x00050048, 0x00000004, 0x00000000,
+    0x0000000b, 0x00000000, 0x00030047, 0x00000004, 0x00000002, 0x00050048, 0x00000005, 0x00000000, 0x0000000b, 0x00000000, 0x00030047, 0x00000005,
+    0x00000002, 0x00020013, 0x00000006, 0x00030021, 0x00000007, 0x00000006, 0x00030016, 0x00000008, 0x00000020, 0x00040017, 0x00000009, 0x00000008,
+    0x00000004, 0x00040015, 0x0000000a, 0x00000020, 0x00000001, 0x00040015, 0x0000000b, 0x00000020, 0x00000000, 0x0003001e, 0x00000004, 0x00000009,
+    0x00040020, 0x0000000c, 0x00000003, 0x00000004, 0x0004003b, 0x0000000c, 0x00000002, 0x00000003, 0x0003001e, 0x00000005, 0x00000009, 0x0004002b,
+    0x0000000b, 0x0000000d, 0x00000003, 0x0004002b, 0x0000000b, 0x0000000e, 0x00000000, 0x0004001c, 0x0000000f, 0x00000005, 0x0000000d, 0x00040020,
+    0x00000010, 0x00000001, 0x0000000f, 0x0004003b, 0x00000010, 0x00000003, 0x00000001, 0x0004002b, 0x0000000a, 0x00000011, 0x00000000, 0x0004002b,
+    0x0000000a, 0x00000012, 0x00000001, 0x0004002b, 0x0000000a, 0x00000013, 0x00000002, 0x00040020, 0x00000014, 0x00000001, 0x00000009, 0x00040020,
+    0x00000015, 0x00000003, 0x00000009, 0x00040020, 0x00000016, 0x00000001, 0x00000008, 0x0004002b, 0x00000008, 0x00000017, 0x00000000, 0x00020014,
+    0x00000018, 0x00050036, 0x00000006, 0x00000001, 0x00000000, 0x00000007, 0x000200f8, 0x00000019, 0x00070041, 0x00000016, 0x0000001a, 0x00000003,
+    0x00000011, 0x00000011, 0x0000000e, 0x0004003d, 0x00000008, 0x0000001b, 0x0000001a, 0x000500ba, 0x00000018, 0x0000001c, 0x0000001b, 0x00000017,
+    0x000300f7, 0x0000001d, 0x00000000, 0x000400fa, 0x0000001c, 0x0000001e, 0x0000001d, 0x000200f8, 0x0000001e, 0x00060041, 0x00000014, 0x0000001f,
+    0x00000003, 0x00000011, 0x00000011, 0x0004003d, 0x00000009, 0x00000020, 0x0000001f, 0x00050041, 0x00000015, 0x00000021, 0x00000002, 0x00000011,
+    0x0003003e, 0x00000021, 0x00000020, 0x000200dc, 0x0000000e, 0x00060041, 0x00000014, 0x00000022, 0x00000003, 0x00000012, 0x00000011, 0x0004003d,
+    0x00000009, 0x00000023, 0x00000022, 0x0003003e, 0x00000021, 0x00000023, 0x000200dc, 0x0000000e, 0x00060041, 0x00000014, 0x00000024, 0x00000003,
+    0x00000013, 0x00000011, 0x0004003d, 0x00000009, 0x00000025, 0x00000024, 0x0003003e, 0x00000021, 0x00000025, 0x000200dc, 0x0000000e, 0x000200dd,
+    0x0000000e, 0x000200f9, 0x0000001d, 0x000200f8, 0x0000001d, 0x000100fd, 0x00010038};
 static int g_fail;
 #define CHECK(c, ...) do { if (!(c)) { g_fail++; printf("FAIL %s:%d: ", __FILE__, __LINE__); printf(__VA_ARGS__); printf("\n"); } } while (0)
 static int have_val(void) { return system("spirv-val --version >/dev/null 2>&1") == 0; }
@@ -131,6 +174,14 @@ int main(void) {
     }
     CHECK(!vka_spv_vin_retype(SPV_TRI_VERT, n, 4, 0, &on, err, sizeof err), "a location the module does not read is refused");
     CHECK(!vka_spv_vin_retype(SPV_TRI_VERT, n, 1, 1, &on, err, sizeof err), "a location both uint and int is refused");
+    {   // vka_spv_subgroup_rows: a module decorating BuiltIn SubgroupId (40) or NumSubgroups (38) addresses whole subgroups; SubgroupLocalInvocationId (41) alone does not
+        uint32_t m[] = {0x07230203, 0x00010300, 0, 8, 0, 2u << 16 | 17, 1, 4u << 16 | 71, 5, 11, 41, 4u << 16 | 71, 6, 11, 40};   // OpCapability Shader; OpDecorate %5/%6 BuiltIn
+        CHECK(vka_spv_subgroup_rows(m, sizeof m / 4), "SubgroupId found");
+        m[14] = 38; CHECK(vka_spv_subgroup_rows(m, sizeof m / 4), "NumSubgroups found");
+        m[14] = 36; CHECK(!vka_spv_subgroup_rows(m, sizeof m / 4), "SubgroupSize and SubgroupLocalInvocationId only: not found");
+        CHECK(!vka_spv_subgroup_rows(SPV_TRI_VERT, n), "the selftest vertex shader: not found");
+        m[14] = 40; m[11] = 0; CHECK(!vka_spv_subgroup_rows(m, sizeof m / 4), "a zero-length instruction before the decoration: not found");
+    }
     {   // A float colour output into an integer target (vka_spv_fout_retype): the selftest's fragment shader, its vec4 output at location 0 as uvec4 / ivec4
         size_t fn = sizeof SPV_TRI_FRAG / 4;
         for (int c = 0; c < 2; c++) {
@@ -264,6 +315,21 @@ int main(void) {
         }
         printf("t_android_spvpatch: %s texture binding %u retyped (%d texture reads in the module)\n", path, b, reads);
         free(w);
+    }
+    {   // A geometry shader that may end a run without emitting (vka_spv_gs_fill): a run that emits nothing emits one degenerate triangle instead; one with streams is left alone
+        size_t gn = sizeof GS_CULL / 4;
+        uint32_t *g = vka_spv_gs_fill(GS_CULL, gn, &on, err, sizeof err);
+        CHECK(g, "culling geometry shader not filled: %s", err);
+        if (g) {
+            CHECK(count_op(g, on, 218) == count_op(GS_CULL, gn, 218) + 3, "three more OpEmitVertex: the degenerate triangle (%d)", count_op(g, on, 218));
+            CHECK(count_op(g, on, 219) == count_op(GS_CULL, gn, 219) + 1, "one more OpEndPrimitive");
+            CHECK(count_op(g, on, 59) == count_op(GS_CULL, gn, 59) + 1, "one more variable: the emitted flag");
+            CHECK(count_op(g, on, 247) == count_op(GS_CULL, gn, 247) + 1, "the filler under its own selection");
+            if (val) CHECK(validate(g, on, "culling geometry shader filled"), "valid SPIR-V");
+            free(g);
+        }
+        err[0] = 1;
+        CHECK(!vka_spv_gs_fill(GS_CULL_STREAM, sizeof GS_CULL_STREAM / 4, &on, err, sizeof err) && !err[0], "a geometry shader that emits to a stream is left alone: %s", err);
     }
     {   // Texture pool reads (vka_spv_pool_fb): a bit set before each read of the pool, early depth tests where they give the same result
         size_t pn = sizeof SPV_PFB_FRAG / 4; int sites = 0, early = 0;

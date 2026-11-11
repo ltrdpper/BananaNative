@@ -52,9 +52,12 @@ typedef struct {
     uint64_t text_end, ro_off, data_off, key_page_off, key_page_size;   // From the rewriter fixups header
     uint64_t ue_malloc_vt;     // Unreal's FMallocBinned3 vtable, found by the rewriter (patch_nso.py, ue_malloc.py; hle_uemalloc.c); 0 = none
     unsigned ue_malloc_slot;   // the slot of its name getter, which names the slot layout
+    uint64_t fps_target_ptr;   // a target frame rate the game steps by, an int32 at [main + fps_target_ptr] + fps_target_field (patch_nso.py, fps_target.py; hle_fpslock.c); 0 = none
+    uint32_t fps_target_field;
     struct { char name[32]; uint64_t off; } ue_cvar[8];   // Unreal console variables found by their registered names (patch_nso.py, ue_cvar.py; UE_CVAR:<name>): each one's TAutoConsoleVariable
     int n_ue_cvar;
     uint64_t fps_state_off;    // frame step state page (patch_nso.py FRAME_STEP: Tears of the Kingdom 1.4.3 and Breath of the Wild 1.9.0 main); 0 = none
+    unsigned oot_patches;      // this rewrite of Ocarina's main has the optional resolution, pool and timing stubs
     int64_t patch_off;         // patch area relative to the base; negative = before the base (image too large, see patch_nso.py FAR), and size does not include it
     uint64_t image_size, file_image_len, patch_len;   // only with the patch area before the base: whole image (with bss and key page), length of the image part of the file, patch area length
     uint64_t back_off, back_len;   // a second patch area after the image (patch_nso.py TWO: a text longer than a B reaches), inside size; 0 = none
