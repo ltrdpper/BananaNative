@@ -799,3 +799,31 @@ into `/tmp/opencode` inside an ssh command: that path exists only in this contai
 - Card metadata (icon, version, publisher) comes from a `.nup` meta block only; an extracted folder
   dump shows none, and a nup with only an icon shows only the icon (Pokopia's does, Ocarina's has no
   image at all).
+
+### 18.9 Adding a cover and version to a .nup already on the phone
+
+The launcher's card icon/version/publisher come only from a `.nup` meta block (`Nup.gameMeta`): a
+folder dump has none, and some `.nup` releases carry a meta block with no image (Pokopia's) or none
+at all. A meta block from another copy of the same game can be patched into a nup **in place**, with
+no retransfer of the 25 GB, because the meta block is just a range in the file named by the TOC:
+
+1. Read the donor's meta block (`PKG` record's `moff`/`msize`, see `dm/tools/nup.py`; a block with a
+   type 3 record holds the icon bytes, type 4 version, 5 title, 6 publisher. Some packers wrote the
+   types one lower: `Nup.Meta.shifted`).
+2. On a local copy of the target nup: append the block 16-byte aligned at the end, point package 0's
+   `moff`/`msize` at it, bump the superblock `fsize`, recompute the TOC SHA-256, write SB and TOC,
+   then open the file with `nup.Nup()` — it validates the header, the TOC checksum, the bounds and
+   the tree.
+3. Push only what changed: the SB and TOC as one head file (`128 + toc_size`, 4096-aligned here) and
+   the append payload, then on the device
+   `dd if=… of=<nup> bs=4096 count=<blocks> conv=notrunc` for the head and
+   `dd if=… of=<nup> bs=4096 seek=<bytes> oflag=seek_bytes conv=notrunc` for the append.
+   **Toybox's dd: `seek` counts blocks unless `oflag=seek_bytes` is given** — a wrong seek silently
+   overwrites game data (it happened once here; the range was restored from the local copy).
+4. Verify with `sha256sum` on the phone against the validated local file, then open the launcher.
+
+Done for Ocarina on 2026-11-11: the 25.0 GB copy on HDD5 (`… Ocarina of TIme [04004860224DEC000].nup`
+and its `[NUP]` folder copy) carries a 39,989-byte meta block: 38,073-byte JPEG icon, version
+`1.1.1`, title; the 25.6 GB copy we had on the phone had none. Its block is kept at
+`dumps/tools/oot-meta.bin`. Result: `sha256 5fafd26b…` on both sides, the container validates, the
+card gets the cover and `1.1.1`.
