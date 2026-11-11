@@ -827,3 +827,24 @@ and its `[NUP]` folder copy) carries a 39,989-byte meta block: 38,073-byte JPEG 
 `1.1.1`, title; the 25.6 GB copy we had on the phone had none. Its block is kept at
 `dumps/tools/oot-meta.bin`. Result: `sha256 5fafd26b…` on both sides, the container validates, the
 card gets the cover and `1.1.1`.
+
+## 19. v0.3.11 without a library rebuild (2026-11-12)
+
+50 more commits (v0.3.1 … v0.3.11): Ocarina vegetation detail and 60 fps hold, a build-host patch of
+its foliage compute shader, Ocarina graphics/timing options, DKB dev tools and a terrain GPU-hang
+fix on Adreno, the UBWC hint for Turnip on the 740, deferred inline uniform updates and bounded
+render areas, the Qualcomm 891.x vendor-namespace loader, Fire Emblem Fortune's Weave resolution
+rows, and Prepare progress.
+
+`DMSH_CHAIN` stayed `1cf10a4252df` and upstream's `DMSH_VK_CHAIN` stayed `6257cc4482ac`, but
+`vk_android_build.py` changed, so our digest moved to `270f200cd367`. A row in
+`vk_android_same.tsv` maps it to `6602a8cd0984` after a full MKW rebuild came out **byte-identical**
+(`sha256 9caffe0b…`), so the four libraries already on the phone stayed valid and only the APK was
+rebuilt and installed.
+
+Merge conflicts, same shape as before: `vk_android_same.tsv` (take upstream's rows), `GameActivity`
+(keep both: the time-of-day block and upstream's vegetation line), `vka_draw.c` (keep our tbuf case,
+adding upstream's `g_skip_dev[VKS_FEATURE]` counter; take upstream's shader-stat/bisect/skip
+block **minus** its `expand && ind` SKIP, since our `DM_VK_QUAD_INDIRECT` path draws those).
+
+Verified on the Thor: Pokopia 59.6 fps (library 8,161), Ocarina ~60 fps in the menu, no CRASH lines.
