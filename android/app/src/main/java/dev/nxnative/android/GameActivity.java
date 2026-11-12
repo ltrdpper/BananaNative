@@ -78,6 +78,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private InputManager inputManager;
     private AudioManager audio;
     private AudioFocusRequest focus;
+    private final AudioFocus focusState = new AudioFocus();
+    private boolean requestFocus() { boolean g = audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED; focusState.requested(g); return g; }
     private AudioDeviceCallback route;
     private boolean routeReady;
 
@@ -427,12 +429,13 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         // Game resolution: the game's own setting, else the main screen's: the window size the host gives the game (window_fn), or the graphics scale and operation
         // mode that give that size (graphics_scale rows), as its profile says (Profile.resolutionEnv); nothing for a game with neither
         Profile prof = Profile.of(id);
-        if (prof != null) env.addAll(prof.resolutionEnv(Prefs.gameWindow(this, id)));
+        if (prof != null) env.addAll(prof.resolutionEnv(Prefs.startWindow(this, id)));   // a Resolution preset's window, else Game resolution's (Prefs.startWindow, ResPresets)
         {   // Time of day (the launcher's System › Time of day): the host's DM_TIME, so a game with a day/night cycle can be started at a chosen time
             String tod = Prefs.timeOverride(this);
             if (!tod.isEmpty()) env.add("DM_TIME=" + tod);
         }
         if (prof != null && prof.vegetationDetail && !Prefs.fullVegetation(this, id)) env.add("DM_VK_VEGETATION=0");
+        if (prof != null) env.addAll(prof.optionsEnv(optEnv -> Prefs.gameOption(this, id, optEnv)));
         Lsfg.env(this, env);   // frame generation: the user's Lossless.dll and the settings
         GameUpscaler.env(this, id, env);   // the Upscaler (Game settings, the in-game panel): the game's own upscaler and the present's scaling
         if (Prefs.drsGame(id)) { int[] drs = Prefs.DRS[Prefs.drs(this, id)]; env.add("DM_DRS=" + drs[0] + "," + drs[1]); }   // dynamic resolution range (Prefs.DRS)
@@ -442,7 +445,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             env.add("DM_PRESENT_INTERVAL=display"); env.add("DM_PRESENT_HZ=" + displayHz()); env.add("DM_FPS_TARGET=0"); env.add("DM_FPS_LIMIT=" + (pace > 0 ? pace : 60));
             if (!Prefs.decouple(this, id)) env.add("DM_FPS_DECOUPLE=0");   // Full game speed at low frame rates off (the in-game panel changes it live)
         } else if (Prefs.limited(id)) {   // a profile's default frame limit (fps_limit), which the host applies itself: only the player's own choice is passed (60 fps = none: the game's own interval)
-            if (Prefs.ownFpsCap(this, id)) { int pace = Prefs.paceCap(this, id); env.add("DM_FPS_LIMIT=" + Math.max(pace, 0)); }
+            if (Prefs.chosenFpsCap(this, id)) { int pace = Prefs.paceCap(this, id); env.add("DM_FPS_LIMIT=" + Math.max(pace, 0)); }   // the player's or the recommended cap
         } else if (cap >= 0) env.add("DM_FPS_TARGET=" + cap);
         if (Prefs.steps(id) && Prefs.hold60(this, id)) env.add("DM_FPS_HOLD60=1");   // Hold 60 fps: one step a frame at the cap of 60 (the in-game panel changes it live)
         String gpuNote = GpuDriver.env(this, id, env);   // the game's GPU driver, else the main screen's (DM_VK_DRIVER)
@@ -453,11 +456,17 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         if (xb == 2) env.add("DM_PAD_LABELLED=2");
         if (Prefs.instancedDraws(this, id)) env.add("DM_VK_INSTANCE=1");   // Game settings › Instanced draws
         if (Prefs.classicPasses(this, id)) env.add("DM_VK_CLASSIC_RP=1");   // Game settings › Classic render passes
+        if (Prefs.skipLayersGame(id) && Prefs.skipLayers(this, id)) env.add("DM_VK_SKIP_FS=" + Prefs.skipLayersKeys(id));   // Game settings › Speedhack: Turn off hidden layers
         env.add("DM_VK_PSO_ASYNC=" + (Prefs.psoAsync(this, id) ? 2 : 0));   // Game settings › Background pipelines (an env.txt line of the player's comes later and wins)
         if (Prefs.ramSaver(this, id)) { env.add("DM_MEM_FILEBACK=1"); env.add("DM_MEM_FILEBACK_KINDS=shader,texture"); }   // Game settings › RAM saver: texture pools in a file in TMPDIR, the cache folder (vka_mem.c "File-backed pools"); lines of env.txt or the game's own come later and win
         String padMap = Prefs.padMap(this, id);   // Button mapping (Game settings, Settings): wins over the label swap's A/B for the buttons it names
         if (!padMap.isEmpty()) env.add("DM_PAD_MAP=" + padMap);
         if (Prefs.stretch(this, id)) env.add("DM_VK_STRETCH=1");   // Game settings › Display › Stretch to screen (or the in-game panel's Picture rows)
+        String aspect = Prefs.aspect(this, id), variant = aspect == null || Profile.of(id) == null ? null : Profile.of(id).aspectVariant(aspect);
+        if (variant != null) {   // Game settings › Aspect ratio: the pack's native-aspect modules (<pack>/<variant>/, loader.c) and the picture shown at that aspect
+            env.add("DM_PATCH_VARIANT=" + variant);
+            env.add("DM_VK_PICTURE_ASPECT=" + aspect);
+        }
         int picSize = Prefs.pictureSize(this, id);   // the in-game panel's Picture size; 100 (the default) is not passed
         if (picSize < PictureFit.SIZE_MAX) env.add("DM_VK_PICTURE_SIZE=" + picSize);
         String lang = GameLanguage.env(Prefs.gameLang(this, id), GameSettings.phoneTag());   // Game settings › Game language: the phone's by default (a DM_LANG line of the user's wins)
@@ -471,6 +480,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private boolean readinessHold(String id) {
         if (readinessDone) return false;
         File files = getExternalFilesDir(null);
+        Prefs.pinDriver(this, id);   // a recommended driver stays the one this check probes for the whole start (Prefs.pinDriver)
         // the game's environment as start() will set it (the launcher's settings, then the user's lines, which win), less the paths start() sets: the check makes the
         // process's first Vulkan device, and a driver reads some variables only then (FD_DEV_FEATURES, TU_DEBUG: GitHub #40)
         List<String> genv = new ArrayList<>();
@@ -480,6 +490,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         genv.addAll(quietEnv(new File(files, "env-" + id + ".txt")));
         String[] denv = Readiness.gameEnv(genv, PROTECTED);
         readinessEnv = denv.length;
+        probedChoice = probedChoice(denv, id);
         overlay.setText(getIntent().getStringExtra("name") + ": checking this phone's GPU…");
         final boolean[] answered = {false};
         Runnable decide = () -> {   // on the UI thread, once: with the facts, or without them after READINESS_WAIT_MS
@@ -492,6 +503,16 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         return true;
     }
     private volatile String probeFacts;
+    private String probedChoice;   // the driver choice the check probes (Recommend.SYSTEM or a folder name), null when a user line picks another: its facts are then not kept
+
+    /** The driver choice the check's environment loads: the launcher's own (Prefs.driverChoice), the system driver for a user line DM_VK_DRIVER=system, else null (Recommend.probedChoice) */
+    private String probedChoice(String[] denv, String id) {
+        String line = null;
+        for (String kv : denv) if (kv.startsWith("DM_VK_DRIVER=")) line = kv;
+        GpuDriver.Info i = GpuDriver.selected(this, id);
+        String own = i == null ? null : "DM_VK_DRIVER=" + i.dir.getPath();
+        return Recommend.probedChoice(line, own, Prefs.driverChoice(this, id));
+    }
     private volatile boolean probeDone;
 
     private List<String> quietEnv(File f) {
@@ -502,6 +523,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
     private void readinessDecide(String id, String vulkan) {
         Profile p = Profile.of(id);
         Map<String, String> f = Readiness.merge(vulkan, ReadinessActivity.ramGib(this), Build.VERSION.SDK_INT);
+        if (probedChoice != null) Prefs.rememberFacts(this, probedChoice, vulkan);   // what the recommended settings match on (Recommend), for this driver
         List<Readiness.Check> l = new ArrayList<>();
         Readiness.Check st = Readiness.status(p != null ? p.status : null);
         if (st != null) l.add(st);
@@ -632,6 +654,26 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                     "DM_CTL=" + new File(files, "ctl.txt"), "NX_EXIT_RECORD=" + ExitWatch.record(this)));   // live control lines (android/TESTING.md "Live control", android/tools/nxctl.sh); DM_CTL= in env.txt turns it off
             env.add(0, "NX_BUILD_TAG=" + Prefs.buildTag(this) + " \u00b7 signer " + Prefs.signerId(this));   // nxlaunch.c writes it as the log's first line; the signer says which key signed the APK (Signer)
             String gpuNote = settingsEnv(id, env);
+            // The 3D scene (Game settings › Resolution, ResPresets; Advanced › 3D scene, SceneRes): the chosen RomFS overlay in the pack, made by the pack step from the player's files;
+            // a DM_ROMFS_OVERLAY line of the user's comes later and wins
+            Profile sceneProf = Profile.of(id);
+            List<SceneRes.Preset> scenes = SceneRes.presets(sceneProf);
+            List<ResPresets.Preset> resPresets = ResPresets.presets(sceneProf);
+            String sceneNote = null;
+            String sceneName = Prefs.startScene(this, id);
+            ResPresets.Preset rp = ResPresets.of(resPresets, sceneName);
+            if (rp != null) {   // a preset with a scene of its own: its overlay is named by its id
+                File ov = SceneRes.overlay(pack.scenes, packDir, rp.id);
+                if (ov != null) env.add(SceneRes.envLine(ov));
+                sceneNote = SceneRes.note(rp.id, rp.label + " \u00b7 " + rp.detail(), ov);
+            } else if (!scenes.isEmpty()) {
+                File ov = SceneRes.overlay(scenes, pack.scenes, packDir, sceneName);
+                if (ov != null) env.add(SceneRes.envLine(ov));
+                sceneNote = SceneRes.note(scenes, sceneName, ov);
+            }
+            String resNote = resPresets.isEmpty() ? null   // the choice in force, for the log: which preset (or Advanced), and the window and scene it gave
+                    : "[nxlaunch] resolution " + Prefs.resolutionChoice(this, id) + (Prefs.resPreset(this, id).isEmpty() ? " (nothing chosen: the earlier settings' match or the default)" : "")
+                    + ": window " + Prefs.startWindow(this, id) + ", scene " + (sceneName.isEmpty() ? "the game's own palette" : sceneName);
             pinStart();   // Use fast cores (Game settings, Settings)
             skipStart();
             // DM_TEST_CRASH (a test crash, ExitWatch): the test app only
@@ -641,15 +683,21 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             boolean stretch = false;
             String testCrash = null;
             int picSize = PictureFit.SIZE_MAX;
+            float picAspect = 16f / 9f;
             String ctl = null;
             for (String kv : env) {   // the last line wins, as for the host
                 if (kv.startsWith("DM_OVERLAY=")) overlayEnv = !kv.substring(11).trim().equals("0");
                 if (kv.startsWith("DM_VK_STRETCH=")) stretch = envOn(kv.substring(14));
                 if (kv.startsWith("DM_VK_PICTURE_SIZE=")) picSize = PictureFit.size((int) envNum(kv.substring(19)));
+                if (kv.startsWith("DM_VK_PICTURE_ASPECT=")) {   // w:h, as the present reads it
+                    String[] wh = kv.substring(21).trim().split(":");
+                    try { if (wh.length == 2 && Integer.parseInt(wh[0]) > 0 && Integer.parseInt(wh[1]) > 0) picAspect = Integer.parseInt(wh[0]) / (float) Integer.parseInt(wh[1]); } catch (NumberFormatException e) { /* the present ignores it too */ }
+                }
                 if (kv.startsWith("DM_CTL=")) ctl = kv.substring(7).trim();
                 if (kv.startsWith("DM_TEST_CRASH=")) testCrash = kv.substring(14).trim();
             }
             runCtl = ctl == null || ctl.isEmpty() ? null : ctl;
+            controls.setAspect(picAspect);
             controls.setPicture(runStretch = stretch, runPictureSize = picSize);
             String[] args = {"nxhost", packDir.getPath()};
             int r = Native.start(args, env.toArray(new String[0]), log.getPath(), files.getPath());
@@ -684,6 +732,9 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             if (testSave != null) Native.note("[nxlaunch] test app: DM_SAVE from env-" + id + ".txt: " + testSave);
             Native.note("frame generation: " + (Lsfg.on(this) ? "on" : "off") + "; " + Lsfg.note);
             Native.note(gpuNote + " (picked in the launcher; a DM_VK_DRIVER line in env.txt wins, the host's [vk] driver line says which ran)");
+            Native.note(Recommend.logLine(Prefs.recStates(this, id)));   // each recommended setting with its value and source (yours / recommended / default); env.txt lines come later and win
+            if (resNote != null) Native.note(resNote);
+            if (sceneNote != null) Native.note(sceneNote);
             input = Native.hasInput();
             started = true;
             hostSetup();
@@ -966,11 +1017,10 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         audio = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
         focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
                 .setAudioAttributes(new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_GAME).setContentType(AudioAttributes.CONTENT_TYPE_UNKNOWN).build())
-                .setOnAudioFocusChangeListener(f -> Native.audioInterrupt(f == AudioManager.AUDIOFOCUS_LOSS || f == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT
-                        || f == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK), ui)
+                .setOnAudioFocusChangeListener(f -> Native.audioInterrupt(focusState.changed(f)), ui)
                 .build();
         // Granted at once calls no listener: an interruption the screen that went saw (a call while in the background) is over for this one
-        if (audio.requestAudioFocus(focus) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) Native.audioInterrupt(false);
+        if (requestFocus()) Native.audioInterrupt(false);
         else Native.note("audio focus not granted at start");
         // The callback first reports the devices already there: only later changes reopen the streams
         route = new AudioDeviceCallback() {
@@ -1091,6 +1141,11 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
         }
         stopped = false;
         hostInBackground = false;
+        // Another app took the audio focus for good while the game was away (AudioFocus): no gain would come, and the game stayed silent. Asked for again here
+        if (audio != null && focus != null && focusState.askAgain()) {
+            if (requestFocus()) { Native.note("audio focus asked for again on the return: granted"); Native.audioInterrupt(false); }
+            else Native.note("audio focus asked for again on the return: refused");
+        }
         Native.lifecycle(2);
     }
     @Override protected void onResume() {

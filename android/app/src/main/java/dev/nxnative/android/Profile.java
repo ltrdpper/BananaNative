@@ -1,5 +1,10 @@
 package dev.nxnative.android;
 
+import java.io.BufferedReader;
+import java.io.File;
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -10,7 +15,7 @@ import java.util.Map;
 /**
  * A game this APK runs: its profile (dm/games/&lt;title ID&gt;) was compiled into a host of its own, libnxhost_&lt;title ID&gt;.so (build.gradle nxGames,
  * src/main/cpp/CMakeLists.txt), and what the launcher needs of it comes from build.gradle as BuildConfig.NX_PROFILES: one line per game, tab-separated: title ID,
- * name, the shader count Prepare translates, the shader inputs digest, the builds (game.tsv build rows, "version module=build ID …", ';' between builds), and, when the APK has them, the readiness rows (the profile's readiness.tsv: "level|fact|min|what", ';' between rows: Readiness.parseReqs), its status row (playable or bring-up; dm/games/README.md "Readiness rows"), the shader delta rows (vk_delta.tsv's "from" rows: "version=count", ',' between them), its "stamp" rows ("version:old SHA-256:new SHA-256", ';' between them), what Game resolution sets (resolutionEnv), the RomFS checks (romfsChecks), the GPU timestamp mode (gpuTs), the default Game resolution (window), whether the game is paced (decoupled), dynamic resolution (drs), the default frame limit (fpsLimit) and whether the game's DLSS runs on the host's stand-in (dlss).
+ * name, the shader count Prepare translates, the shader inputs digest, the builds (game.tsv build rows, "version module=build ID …", ';' between builds), and, when the APK has them, the readiness rows (the profile's readiness.tsv: "level|fact|min|what", ';' between rows: Readiness.parseReqs), its status row (playable or bring-up; dm/games/README.md "Readiness rows"), the shader delta rows (vk_delta.tsv's "from" rows: "version=count", ',' between them), its "stamp" rows ("version:old SHA-256:new SHA-256", ';' between them), what Game resolution sets (resolutionEnv), the RomFS checks (romfsChecks), the GPU timestamp mode (gpuTs), the default Game resolution (window), whether the game is paced (decoupled), dynamic resolution (drs), the default frame limit (fpsLimit) and whether the game's DLSS runs on the host's stand-in (dlss), and, after the vegetation flag and the option rows, the 3D scene overlays (scenes), the Resolution presets (presets), the Speedhack's layers (skipLayers) and the recommended settings (recommend).
  * A game without a profile here cannot run in this APK (its host has no profile for it): the launcher says so instead of starting it.
  * No Android classes: the JVM test (android/app/src/jvmtest) runs it on the Mac.
  */
@@ -23,10 +28,22 @@ final class Profile {
     String gpuTs = "submission";   // game.tsv gpu_timestamps (build.gradle gpuTsOf): "segment" or "submission", what the host does without DM_NVN_GPU_TS (Game settings › GPU timing)
     String window = "";   // game.tsv android_window (build.gradle windowOf): the default Game resolution when the player chose none (Prefs.gameWindow), "" for the main screen's
     boolean vegetationDetail;
+    List<Option> options = Collections.emptyList();
+    String scenes = "";   // game.tsv scene_scale rows with a scene_scale_palette (build.gradle sceneOf): "name|label|scale|mode", ';' between them; Game settings › Resolution › Advanced › 3D scene (SceneRes.presets)
+    String presets = "";   // game.tsv res_preset rows with their windows' scene_output rows (build.gradle presetsOf): "id|label|window|mode|height|outW|outH|measured", ';' between them; Game settings › Resolution (ResPresets)
     boolean steps;   // game.tsv has fps_steps rows (build.gradle stepsOf): a framework of whole fixed steps a frame, which Hold 60 fps keeps at one (Prefs.steps)
     boolean presentOnly;   // game.tsv fps_limit_present 1 (build.gradle presentOnlyOf): the frame limit only paces the presents, the game's own logic is not known to follow it (Prefs.presentOnly)
     int fpsLimit;   // game.tsv fps_limit (build.gradle fpsLimitOf): the host's frame limit by default, frames a second (0 = none); the launcher offers a frame limit for it (Prefs.limited)
     boolean drs;   // game.tsv has drs_ctl rows (build.gradle drsOf): the host can steer the game's dynamic resolution (Prefs.drsGame)
+    String recommend = "";   // game.tsv recommend rows (build.gradle recommendOf): "<match>|<setting>=<value> …", ';' between them; the recommended settings per phone (Recommend, Prefs.recommended)
+    String skipLayers = "";   // game.tsv skip_layers (build.gradle skipLayersOf): pixel shader keys whose draws the Speedhack setting drops (Prefs.skipLayersGame), "" = not offered
+    String variants = "";   // game.tsv variant rows (build.gradle variantsOf): "<name>=<label>", ',' between them; a native 4:3 mod is "43=4:3" (Game settings › Aspect ratio)
+
+    /** The variant whose label is w:h (a native aspect mod: "43" for "4:3"), or null when the profile has none */
+    String aspectVariant(String label) {
+        for (String v : variants.split(",")) { int eq = v.indexOf('='); if (eq > 0 && v.substring(eq + 1).equals(label)) return v.substring(0, eq); }
+        return null;
+    }
     boolean dlss;   // game.tsv has dlss_standin rows (build.gradle dlssOf): the game's DLSS runs on the host's GSR2 stand-in, with its Upscaler modes and sliders (Prefs.dlssGame)
     boolean decoupled;   // game.tsv has fps_decouple rows (build.gradle decoupleOf): the game's speed follows its measured frame rate, so it gets a frame limit (Prefs.paced)
     String romfsChecks = "";   // game.tsv romfs_check rows (build.gradle romfsChecksOf): "<path>|<line>|<expected or main>", ';' between them (RomfsCheck)
@@ -49,6 +66,122 @@ final class Profile {
         }
         return env;
     }
+
+    public static final class Option {
+        public final String env;
+        public final String label;
+        public final String description;
+        public final boolean live;   // false = restart, true = live
+        public final String implies; // env var of option implied by this option, or ""
+        public final String needs;   // fixup marker required by this option (e.g. "OOT_PATCHES"), or ""
+
+        public Option(String env, String label, String description, boolean live, String implies, String needs) {
+            this.env = env != null ? env : "";
+            this.label = label != null ? label : "";
+            this.description = description != null ? description : "";
+            this.live = live;
+            this.implies = implies != null ? implies : "";
+            this.needs = needs != null ? needs : "";
+        }
+
+        public Option(String env, String label, String description, boolean live) {
+            this(env, label, description, live, "", "");
+        }
+
+        public boolean hasImplies() { return !implies.isEmpty(); }
+        public boolean hasNeeds() { return !needs.isEmpty(); }
+
+        public String envLine() { return env + "=1"; }
+
+        /** Whether this option's required fixup marker (if any) is present in the pack */
+        public boolean isSupported(File packDir) {
+            return needs.isEmpty() || hasFixupMarker(packDir, needs);
+        }
+
+        @Override public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof Option)) return false;
+            Option that = (Option) o;
+            return live == that.live && env.equals(that.env) && label.equals(that.label)
+                    && description.equals(that.description) && implies.equals(that.implies)
+                    && needs.equals(that.needs);
+        }
+
+        @Override public int hashCode() {
+            return java.util.Objects.hash(env, label, description, live, implies, needs);
+        }
+
+        @Override public String toString() {
+            return env + "|" + label + "|" + description + "|" + (live ? "live" : "restart")
+                    + (hasImplies() ? "|implies=" + implies : "") + (hasNeeds() ? "|needs=" + needs : "");
+        }
+    }
+
+    /** Parse option rows encoded as "<env>|<label>|<description>|<restart|live>[|<implies>[|<needs>]]", ';' between them */
+    static List<Option> parseOptions(String text) {
+        if (text == null || text.trim().isEmpty()) return Collections.emptyList();
+        List<Option> out = new ArrayList<>();
+        for (String row : text.split(";")) {
+            String r = row.trim();
+            if (r.isEmpty()) continue;
+            String[] f = r.split("\\|", -1);
+            if (f.length >= 3 && !f[0].trim().isEmpty()) {
+                boolean live = f.length > 3 && "live".equalsIgnoreCase(f[3].trim());
+                String implies = f.length > 4 ? f[4].trim() : "";
+                String needs = f.length > 5 ? f[5].trim() : "";
+                out.add(new Option(f[0].trim(), f[1].trim(), f[2].trim(), live, implies, needs));
+            }
+        }
+        return Collections.unmodifiableList(out);
+    }
+
+    /** Find an enabled option that implies targetOpt, or null */
+    static Option findImpliedBy(List<Option> options, Option targetOpt, java.util.function.Predicate<String> isOptionOn) {
+        if (options == null || targetOpt == null) return null;
+        for (Option opt : options) {
+            if (opt != targetOpt && !opt.implies.isEmpty() && opt.implies.equals(targetOpt.env) && isOptionOn.test(opt.env)) {
+                return opt;
+            }
+        }
+        return null;
+    }
+
+    /** Build environment lines ("<ENV>=1") for enabled options */
+    static List<String> buildOptionsEnv(List<Option> options, java.util.function.Predicate<String> isOptionOn) {
+        List<String> env = new ArrayList<>();
+        if (options == null || options.isEmpty()) return env;
+        for (Option opt : options) {
+            boolean on = isOptionOn.test(opt.env) || findImpliedBy(options, opt, isOptionOn) != null;
+            if (on) env.add(opt.envLine());
+        }
+        return env;
+    }
+
+    /** Environment lines ("<ENV>=1") for options enabled for this profile */
+    List<String> optionsEnv(java.util.function.Predicate<String> isOptionOn) {
+        return buildOptionsEnv(options, isOptionOn);
+    }
+
+    /** Whether a pack's main.fixups.tsv has "# <marker> 1" */
+    static boolean hasFixupMarker(File packDir, String marker) {
+        if (packDir == null || !packDir.isDirectory() || marker == null || marker.trim().isEmpty()) return false;
+        File f = new File(packDir, "main.fixups.tsv");
+        if (!f.isFile()) return false;
+        String target = "# " + marker.trim();
+        try (BufferedReader r = Files.newBufferedReader(f.toPath(), StandardCharsets.UTF_8)) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith(target)) {
+                    String[] parts = line.split("\\s+");
+                    if (parts.length >= 3 && "1".equals(parts[2])) return true;
+                }
+            }
+        } catch (IOException e) {
+            return false;
+        }
+        return false;
+    }
+
 
     /**
      * Whether Game resolution changes while the game runs (the in-game panel): only for a game with graphics_scale rows, whose host changes the graphics scale and operation mode
@@ -128,6 +261,16 @@ final class Profile {
         return c.equals(m[0]) ? 0 : c.equals(m[1]) ? 1 : -1;
     }
 
+    /**
+     * The window a Game resolution value gives this game, as a comparable choice (ResPresets.current): the choice of the graphics_scale row it takes (Phone 540p → "1280x720"
+     * on a game whose smallest row is 1280x720), null where it takes none; the value itself for a game without graphics_scale rows
+     */
+    String windowRow(String choice) {
+        if (choice == null || !resolution.startsWith("scale:")) return choice;
+        String r = scalePick(choice);
+        return r == null ? null : r.substring(0, r.indexOf('='));
+    }
+
     /** The graphics_scale row a choice takes ("WxH=scale/mode"): its own, else the largest that fits in it, else the smallest; null without rows */
     private String scalePick(String choice) {
         if (!resolution.startsWith("scale:")) return null;
@@ -190,6 +333,12 @@ final class Profile {
             p.presentOnly = c.length > 17 && c[17].equals("1");
             p.steps = c.length > 18 && c[18].equals("1");
             p.vegetationDetail = c.length > 19 && c[19].equals("1");
+            p.options = parseOptions(c.length > 20 ? c[20] : "");
+            p.scenes = c.length > 21 ? c[21] : "";
+            p.presets = c.length > 22 ? c[22] : "";
+            p.skipLayers = c.length > 23 ? c[23] : "";
+            p.recommend = c.length > 24 ? c[24] : "";
+            p.variants = c.length > 25 ? c[25] : "";
             out.add(p);
         }
         return Collections.unmodifiableList(out);
