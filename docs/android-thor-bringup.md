@@ -768,6 +768,16 @@ adb shell am start -n dev.nxnative.android/.MainActivity \
 
 Verify in the newest `files/logs/<id>-*.log`: `build: commit <sha>, shader chain <CHAIN>`,
 `shader library …/shaders/v-<CHAIN>/dmsh_vk.lib: N shaders`, `[vk] pace up to … fps`, no `CRASH`.
+**Close the game after every test.** A verified run is not finished until the game is stopped:
+
+```sh
+adb -s <serial> shell am force-stop dev.nxnative.android
+```
+
+It holds 5-8 GB while it runs (Ocarina has been killed by the system for that on this 15 GB phone),
+keeps writing logs, and leaves the launcher slower for the next start. Leave the device on the
+launcher and free; the same applies after a crash or a failed test.
+
 
 **After a chain change the driver pipeline cache is invalidated** (`pipeline cache … is not stamped
 with its shader library`), so the first run compiles every pipeline (Pokopia: 52 s, compute ones
