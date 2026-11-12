@@ -858,3 +858,23 @@ adding upstream's `g_skip_dev[VKS_FEATURE]` counter; take upstream's shader-stat
 block **minus** its `expand && ind` SKIP, since our `DM_VK_QUAD_INDIRECT` path draws those).
 
 Verified on the Thor: Pokopia 59.6 fps (library 8,161), Ocarina ~60 fps in the menu, no CRASH lines.
+
+## 20. v0.3.13: full library rebuild (2026-11-12)
+
+25 commits (v0.3.12, v0.3.13): Polish and Thai, Star Fox and Fire Emblem Fortune's Weave game pages,
+recommended settings, Ocarina on Qualcomm, FSR 3.1 as a fourth Upscaler (`DM_VK_DLSS=4`), the Ocarina
+"Turn off hidden layers" speedhack, audio focus regained after a permanent loss, a present that
+waits for pending gates (Turnip tearing), and a Fire Emblem 4:3 option.
+
+Both chains moved: `DMSH_CHAIN` `1cf10a4252df` → **`9b2613d5216b`**, Vulkan chain → **`da525bb64987`**
+(ours; upstream's is `65883461079b`). The profile inputs did not change, so the existing shader
+packages and splits were reused; only the libraries were rebuilt. Translator republished
+(`--source-sha` `d9898e20cdf4782a`, the new lock).
+
+Merge conflicts: `dmsh_chain_vk.h` (take theirs, regenerate), `GameActivity` (keep upstream's
+`Prefs.startWindow` line plus our time-of-day block).
+
+Built and checked: Pokopia 8,161 shaders / 228 MB, DKB 22,852 / 216 MB, MKW 11,603 / 109 MB,
+Ocarina 42,848 / 721 MB. Deployed to the packs as `shaders/v-da525bb64987/`, old `v-6602a8cd0984`
+removed. Verified: Pokopia 60.2 fps, Ocarina 60.0 fps in the menu, no CRASH lines. The game was then
+closed and the launcher left in front, as the rule above requires.
