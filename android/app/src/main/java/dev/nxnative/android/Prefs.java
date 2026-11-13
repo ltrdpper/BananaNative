@@ -143,6 +143,7 @@ final class Prefs {
     static void resetGame(Context c, String titleId) {
         SharedPreferences.Editor e = of(c).edit();
         for (String k : GAME_SETTINGS) e.remove(gameKey(k, titleId));
+        e.remove(gameKey("lp_mode", titleId));   // Turn Link Play off, retaining the saved host and room for next time.
         Profile p = Profile.of(titleId);
         if (p != null) {
             for (Profile.Option opt : p.options) e.remove(gameKey("opt_" + opt.env, titleId));
@@ -327,10 +328,18 @@ final class Prefs {
         java.util.List<ResPresets.Preset> ps = ResPresets.presets(p);
         if (ps.isEmpty()) return "";
         boolean legacy = ownWindow(c, titleId) || of(c).contains("window") || !sceneRes(c, titleId).isEmpty();
-        String stored = resPreset(c, titleId), r = rec(c, titleId, Recommend.RES_PRESET);
+        String stored = ResPresets.mapStored(ps, p.presetFrom, resPreset(c, titleId)), r = rec(c, titleId, Recommend.RES_PRESET);
         if (stored.isEmpty() && !ownResolution(c, titleId) && ResPresets.of(ps, r) != null) stored = r;   // nothing of the game's own: the recommended preset, before the main screen's window
         return ResPresets.current(ps, p, SceneRes.presets(p), stored, legacy, gameWindow(c, titleId), sceneRes(c, titleId));
     }
+    /**
+     * Tester rows (Settings › Help › Tester settings, off by default): the launcher rows that only testers need. For a game with Resolution presets they are the Advanced choice with
+     * its Window and 3D scene rows, the Upscaler and the Dynamic resolution slider (simpleRes); a player sees Resolution's presets alone. What is stored keeps applying either way
+     */
+    static boolean testerRows(Context c) { return of(c).getBoolean("tester_rows", false); }
+    static void testerRows(Context c, boolean on) { of(c).edit().putBoolean("tester_rows", on).commit(); }
+    /** Whether a game shows the simple Resolution only: its profile has Resolution presets and the tester rows are off */
+    static boolean simpleRes(Context c, String titleId) { return !testerRows(c) && !ResPresets.presets(Profile.of(titleId)).isEmpty(); }
     /** Whether the player chose this game's Resolution: a preset or Advanced, or (from before the presets) its own window or 3D scene */
     static boolean ownResolution(Context c, String titleId) {
         return !resPreset(c, titleId).isEmpty() || ownWindow(c, titleId) || !sceneRes(c, titleId).isEmpty();

@@ -638,6 +638,7 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
             if (nupFd >= 0) romfs = PickedPath.forHost(romfs, game, nupFd);
             // The user's lines, read first: the paths the launcher sets cannot be changed by them (guard), but the test app's env-<id>.txt may name a test save folder (one game's file only: a global DM_SAVE would point every game at one save)
             List<String> user = new ArrayList<>(guard(userEnv(new File(files, "env.txt")), "env.txt", false));   // diagnostic switches (every game: never DM_SAVE) (DM_SVC=1, DM_FS=1, ...), as the iPhone's Documents/env.txt
+            user.addAll(guard(LinkPlay.env(this, id), "Link Play", false));   // Game settings › Link Play (before the typed lines, which win)
             user.addAll(guard(envLines(Prefs.gameEnv(this, id)), "the game's settings", false));   // the game's own lines (its Game settings): after env.txt, so they win for this game
             user.addAll(guard(userEnv(new File(files, "env-" + id + ".txt")), "env-" + id + ".txt", testApp()));   // and env-<title ID>.txt (adb), the same for one game
             File save = saveDir(files, game, id), temp = mkdirs(new File(files, "temp/" + id)), root = mkdirs(new File(files, "root"));
@@ -654,8 +655,8 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                     "DM_CTL=" + new File(files, "ctl.txt"), "NX_EXIT_RECORD=" + ExitWatch.record(this)));   // live control lines (android/TESTING.md "Live control", android/tools/nxctl.sh); DM_CTL= in env.txt turns it off
             env.add(0, "NX_BUILD_TAG=" + Prefs.buildTag(this) + " \u00b7 signer " + Prefs.signerId(this));   // nxlaunch.c writes it as the log's first line; the signer says which key signed the APK (Signer)
             String gpuNote = settingsEnv(id, env);
-            // The 3D scene (Game settings › Resolution, ResPresets; Advanced › 3D scene, SceneRes): the chosen RomFS overlay in the pack, made by the pack step from the player's files;
-            // a DM_ROMFS_OVERLAY line of the user's comes later and wins
+            // The 3D scene (Game settings › Resolution, ResPresets; Advanced › 3D scene, SceneRes): the chosen RomFS overlay in the pack, made by the pack step from the player's files,
+            // or the chosen game arguments (scene_arg); a DM_ROMFS_OVERLAY or DM_GAME_ARGS_ADD line of the user's comes later and wins
             Profile sceneProf = Profile.of(id);
             List<SceneRes.Preset> scenes = SceneRes.presets(sceneProf);
             List<ResPresets.Preset> resPresets = ResPresets.presets(sceneProf);
@@ -666,9 +667,11 @@ public final class GameActivity extends Activity implements SurfaceHolder.Callba
                 File ov = SceneRes.overlay(pack.scenes, packDir, rp.id);
                 if (ov != null) env.add(SceneRes.envLine(ov));
                 sceneNote = SceneRes.note(rp.id, rp.label + " \u00b7 " + rp.detail(), ov);
-            } else if (!scenes.isEmpty()) {
+            } else if (!scenes.isEmpty()) {   // an overlay (scene_scale), or game arguments the engine takes (scene_arg: DM_GAME_ARGS_ADD, nothing in the pack)
                 File ov = SceneRes.overlay(scenes, pack.scenes, packDir, sceneName);
                 if (ov != null) env.add(SceneRes.envLine(ov));
+                String argLine = SceneRes.argLine(scenes, sceneName);
+                if (argLine != null) env.add(argLine);
                 sceneNote = SceneRes.note(scenes, sceneName, ov);
             }
             String resNote = resPresets.isEmpty() ? null   // the choice in force, for the log: which preset (or Advanced), and the window and scene it gave

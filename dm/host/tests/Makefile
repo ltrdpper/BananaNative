@@ -16,7 +16,7 @@ GAME_H = ../gen/$(GAME)/game_profile.h
 # reference to an undefined symbol only when it is named as allowed to stay undefined
 WEAK_HOST = -Wl,-U,_vka_swap_rb
 
-run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_output_stream $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pollwait $(B)/t_pctl $(B)/t_sf $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_cheats $(B)/t_pad_hid
+run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture $(B)/t_oe $(B)/t_fs $(B)/t_fs_commit_list $(B)/t_thread_leak $(B)/t_fs_case $(B)/t_audio $(B)/t_output_stream $(B)/t_opus_hw $(B)/t_audio_spsc $(B)/t_swkbd $(B)/t_altstack $(B)/t_condvar $(B)/t_condvar_old $(B)/t_pollwait $(B)/t_pctl $(B)/t_sf $(B)/t_time $(B)/t_shared_font $(B)/t_vorbis $(B)/t_vorbis_divides $(B)/t_hid $(B)/t_haptics $(B)/t_haptics_apple $(B)/t_cheats $(B)/t_pad_hid
 	$(B)/t_language
 	$(B)/t_heap_size
 	$(B)/t_touch
@@ -30,6 +30,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	TMPDIR="$(abspath $(B))" $(B)/t_save_sync_metadata $(QUIET)
 	$(B)/t_audio
 	$(B)/t_output_stream
+	$(B)/t_opus_hw
 	$(B)/t_audio_spsc
 	$(B)/t_audio_stats
 	$(B)/t_fpslock
@@ -68,6 +69,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	TMPDIR="$(abspath $(B))" $(B)/t_cheats $(QUIET)
 	$(B)/t_nro
 	$(B)/t_pack_modules
+	$(B)/t_game_args
 	$(B)/t_symbols
 	$(B)/t_android_av
 	$(B)/t_android_input
@@ -98,6 +100,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	$(B)/t_android_memu
 run: $(B)/t_nro
 run: $(B)/t_pack_modules
+run: $(B)/t_game_args
 run: $(B)/t_symbols
 $(B)/t_symbols: t_symbols.c ../hle.c ../loader.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-deprecated-declarations -I.. $(GINC) -o $@ t_symbols.c
@@ -138,6 +141,9 @@ $(GAME_H): FORCE
 	$(MAKE) -C .. game_profile GAME=$(GAME)
 $(B)/t_pack_modules: t_pack_modules.c ../pack_modules.h | $(B)
 	$(CLANG) -O1 -Wall -Werror -fsanitize=undefined -I.. -o $@ t_pack_modules.c
+# DM_GAME_ARGS_ADD's words after the game's arguments (game_args.h, main.c)
+$(B)/t_game_args: t_game_args.c ../game_args.h | $(B)
+	$(CLANG) -O1 -Wall -Werror -fsanitize=undefined -I.. -o $@ t_game_args.c
 
 $(B)/t_heap_size: t_heap_size.c ../hle_svc.c ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_heap_size.c
@@ -229,6 +235,9 @@ $(B)/t_nfc: t_nfc.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
 .PHONY: nfc
 nfc: $(B)/t_nfc
 	$(B)/t_nfc
+$(B)/t_opus_hw: t_opus_hw.c ../hle_codec.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. $(GINC) -o $@ t_opus_hw.c
+
 $(B)/t_language: t_language.c ../hle_sdk16.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -Wno-frame-address -fsanitize=address,undefined -I.. $(GINC) -o $@ t_language.c
 $(B)/t_motion: t_motion.c ../motion_fusion.h | $(B)
@@ -477,3 +486,24 @@ $(B)/t_android_memu: t_android_memu.c $(VKA)/vka_memu_spv.c $(VKA)/vka_memu_spv.
 # The replay's SPIR-V rewrite of integer-fed vertex inputs (vka_spvpatch.c): the selftest's vertex shader, validated by spirv-val when it is on the PATH; DM_VK_SPV_DIR=<.spv folder> adds those modules
 $(B)/t_android_spvpatch: t_android_spvpatch.c $(VKA)/vka_spvpatch.c $(VKA)/vka_spvpatch.h $(VKA)/vka_selftest_spv.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_android_spvpatch.c $(VKA)/vka_spvpatch.c
+
+# Optional local-wireless host checks. COOP_DIR is the separately pinned module;
+# the default test run does not require it or open any network connection.
+COOP_DIR ?= ../../third_party/pokopia-coop
+COOP_TEST_SRC = $(addprefix $(COOP_DIR)/coop_,ldn.c vnet.c mpnet.c plat.c auth.c disc.c)
+COOP_TEST_LIBS = $(if $(filter Darwin,$(shell uname -s)),-ldns_sd,)
+$(B)/t_net_eventfd: t_net_eventfd.c ../hle_net.c ../hle_coop.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -I.. $(GINC) -o $@ t_net_eventfd.c
+$(B)/t_net_coop: t_net_coop.c ../hle_net.c ../hle_offline.c ../hle_coop.c ../hle_coop.h ../hle.h ../dm.h $(GAME_H) $(COOP_TEST_SRC) | $(B)
+	$(CLANG) -O1 -g -Wall -Wno-unused-function -DNX_COOP_VENDOR=1 -I.. $(GINC) -I$(COOP_DIR) -o $@ t_net_coop.c $(COOP_TEST_SRC) $(COOP_TEST_LIBS)
+.PHONY: net-eventfd net-coop
+net-eventfd: $(B)/t_net_eventfd
+	$(B)/t_net_eventfd
+net-coop: $(B)/t_net_coop
+	$(B)/t_net_coop unset
+	$(B)/t_net_coop off
+	$(B)/t_net_coop zero
+	$(B)/t_net_coop empty
+	$(B)/t_net_coop invalid
+	$(B)/t_net_coop enabled
+	$(B)/t_net_coop select-race
