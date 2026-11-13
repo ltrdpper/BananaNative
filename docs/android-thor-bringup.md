@@ -888,3 +888,20 @@ opt-in LDN transport (virtual UDP sockets), and the issue-digest workflow.
 Chains did **not** move (`9b2613d5216b` / `da525bb64987`), and the merge was clean: no conflicts, no
 library rebuild. Only the APK was rebuilt and installed. Verified: Pokopia 60.1 fps, Ocarina 59.8 fps
 in the menu with audio callbacks running, no CRASH lines. Game closed afterwards.
+
+### 18.10 Proposing a change upstream (Gitea)
+
+The upstream lives on Gitea; there is no GitHub repository any more. Push over HTTPS (SSH port 22 is
+unreachable here) with the `dopper` token, to the `dopper/BananaNative` fork, then open a PR with the
+API:
+
+```sh
+git -c http.extraHeader="Authorization: token $(cat /config/.config/gitea/dopper.token)" \
+  push https://git.eden-emu.dev/dopper/BananaNative.git <branch>
+curl -s -H "Authorization: token $(cat /config/.config/gitea/dopper.token)" -H 'Content-Type: application/json' \
+  -d '{"head":"dopper:<branch>","base":"android","title":"...","body":"..."}' \
+  https://git.eden-emu.dev/api/v1/repos/moceure/BananaNative/pulls
+```
+
+Branches for proposals are cut from `origin/android`, one change each, built once before pushing.
+`eden-time-of-day` (PR #227, the DM_TIME setting) is the example.
