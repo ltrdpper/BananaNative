@@ -878,3 +878,13 @@ Built and checked: Pokopia 8,161 shaders / 228 MB, DKB 22,852 / 216 MB, MKW 11,6
 Ocarina 42,848 / 721 MB. Deployed to the packs as `shaders/v-da525bb64987/`, old `v-6602a8cd0984`
 removed. Verified: Pokopia 60.2 fps, Ocarina 60.0 fps in the menu, no CRASH lines. The game was then
 closed and the launcher left in front, as the rule above requires.
+
+## 21. v0.3.14: APK only, libraries reused (2026-11-13)
+
+12 commits (v0.3.14): Ocarina sound back and its dynamic resolution working, one Resolution setting,
+Zelda's cave/trail geometry kept on Qualcomm Vulkan, per-profile Link Play join settings with an
+opt-in LDN transport (virtual UDP sockets), and the issue-digest workflow.
+
+Chains did **not** move (`9b2613d5216b` / `da525bb64987`), and the merge was clean: no conflicts, no
+library rebuild. Only the APK was rebuilt and installed. Verified: Pokopia 60.1 fps, Ocarina 59.8 fps
+in the menu with audio callbacks running, no CRASH lines. Game closed afterwards.
