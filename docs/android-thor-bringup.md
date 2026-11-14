@@ -905,3 +905,18 @@ curl -s -H "Authorization: token $(cat /config/.config/gitea/dopper.token)" -H '
 
 Branches for proposals are cut from `origin/android`, one change each, built once before pushing.
 `eden-time-of-day` (PR #227, the DM_TIME setting) is the example.
+
+## 22. v0.3.22: APK only again (2026-11-14)
+
+29 commits (v0.3.15 … v0.3.22): Fire Emblem Fortune's Weave settings (RAM on 12 GB devices, resolution,
+upscaling, FSR 3.1 recommended), a release page that no longer crashes on Android 13, the bug form
+asking for a save zip, and the `resEnv`/render-row refactor (#209) that our time-of-day PR now builds
+on.
+
+Chains unchanged (`9b2613d5216b` / `da525bb64987`), so the libraries stayed; one conflict again, in
+`GameActivity.settingsEnv`, resolved by keeping upstream's render rows first and our `DM_TIME` block
+after them.
+
+Built and installed: Pokopia 59.7 fps (library 8,161), Ocarina 60.2 fps in the menu, no CRASH lines.
+Game closed and the launcher left in front. The time-of-day PR (#227) is rebased on this same base
+and is mergeable.
