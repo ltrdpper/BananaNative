@@ -26,9 +26,9 @@ final class DumpLayout {
                 for (Nup.Pkg p : n.packages)
                     if ((p.kind == Nup.BASE || p.kind == Nup.UPDATE) && isFile(n, p, "exefs/main")) out.add(p.kind == Nup.BASE ? 0L : p.version);
             } else {
-                if (new File(dump, "base/exefs/main").isFile()) out.add(0L);   // a one-version folder (exefs/ at its top) has no version number: not here
+                if (new File(root(new File(dump, "base")), "exefs/main").isFile()) out.add(0L);   // a one-version folder (exefs/ at its top) has no version number: not here
                 File[] ups = new File(dump, "updates").listFiles(File::isDirectory);
-                if (ups != null) for (File u : ups) if (u.getName().matches("\\d+") && new File(u, "exefs/main").isFile()) out.add(Long.parseLong(u.getName()));
+                if (ups != null) for (File u : ups) if (u.getName().matches("\\d+") && new File(root(u), "exefs/main").isFile()) out.add(Long.parseLong(u.getName()));
             }
         } catch (IOException | RuntimeException e) {
             // an unreadable dump holds no version here (DumpCheck says why)
@@ -42,17 +42,87 @@ final class DumpLayout {
         return x != null && !x.dir;
     }
 
+    /** One thing a dump holds, for the game page's Game files (MainActivity.gameTab): its kind (base, update, dlc, problem), its title and a detail line */
+    static final class Item {
+        final String kind, title, detail;
+
+        Item(String kind, String title, String detail) { this.kind = kind; this.title = title; this.detail = detail; }
+
+        @Override public String toString() { return kind + ": " + title + (detail == null ? "" : " — " + detail); }
+    }
+
+    /** A version in the player's words: the profile's name for it ("1.2.1"), else its number */
+    static String versionLabel(Profile prof, long v) {
+        String d = prof == null ? null : prof.display(v);
+        return d != null ? d : String.valueOf(v);
+    }
+
+    /**
+     * What a dump holds (read from the dump: a .nup's TOC is hashed, so off the main thread): the base game, each update with its version, and each DLC (its
+     * title ID, and its name when its .nup carries one)
+     */
+    static List<Item> contents(File dump, Profile prof) {
+        List<Item> out = new ArrayList<>();
+        java.util.Set<Long> supported = prof == null ? java.util.Set.of() : prof.buildMap().keySet();
+        try {
+            if (Nup.isNup(dump)) {
+                Nup n = Nup.open(dump);
+                for (Nup.Pkg p : n.packages) {
+                    if (p.kind == Nup.BASE) out.add(new Item("base", "Base game", p.exefsDir == Nup.NONE ? "no game code of its own" : null));
+                    else if (p.kind == Nup.UPDATE)
+                        out.add(new Item("update", "Update " + versionLabel(prof, p.version), "version " + p.version + (supported.contains(p.version) ? ", a build this app supports" : "")
+                                + (p.flags != 0 ? ", a whole game (packed from an update dump)" : "")));
+                    else if (p.kind == Nup.ADDON) {
+                        String name = null;
+                        try { byte[] m = n.metaBlock(p); if (m != null) name = Nup.Meta.parse(m).title; } catch (IOException e) { /* no name */ }
+                        String tid = String.format(Locale.ROOT, "%016X", p.titleId);
+                        out.add(new Item("dlc", name != null ? name : "DLC " + tid, name != null ? tid : "add-on " + (p.titleId & 0xFFF)));
+                    }
+                }
+            } else {
+                for (long v : versions(dump))
+                    out.add(v == 0 ? new Item("base", "Base game", supported.contains(0L) ? "a build this app supports" : null)
+                            : new Item("update", "Update " + versionLabel(prof, v), "version " + v + (supported.contains(v) ? ", a build this app supports" : "")));
+                File[] dlc = new File(dump, "dlc").listFiles(File::isDirectory);
+                if (dlc != null) {
+                    java.util.Arrays.sort(dlc);
+                    for (File d : dlc) {
+                        String[] parts = d.list();
+                        out.add(new Item("dlc", "DLC " + d.getName().toUpperCase(Locale.ROOT), parts == null || parts.length == 0 ? "empty" : parts.length == 1 ? null : parts.length + " versions"));
+                    }
+                }
+            }
+        } catch (IOException | RuntimeException e) {
+            out.add(new Item("problem", "Cannot be read", e.getMessage()));
+        }
+        if (out.stream().noneMatch(i -> i.kind.equals("dlc"))) out.add(new Item("dlc", "No DLC", null));
+        return out;
+    }
+
     /** The newest version a dump holds, -1 when none */
     static long newest(File dump) {
         List<Long> v = versions(dump);
         return v.isEmpty() ? -1 : v.get(v.size() - 1);
     }
 
-    /** A folder dump's folder of a version: updates/&lt;v&gt;, base, or the dump itself for a one-version folder */
-    private static File dir(File dump, long v) {
-        if (v != 0) return new File(dump, "updates/" + v);
+    /** A folder dump's folder of a version: updates/&lt;v&gt;, base (each its package: root), or the dump itself for a one-version folder */
+    static File dir(File dump, long v) {
+        if (v != 0) return root(new File(dump, "updates/" + v));
         File b = new File(dump, "base");
-        return b.isDirectory() || !new File(dump, "exefs").isDirectory() ? b : dump;
+        return b.isDirectory() || !new File(dump, "exefs").isDirectory() ? root(b) : dump;
+    }
+
+    /**
+     * A version folder's package, the folder that holds its exefs/ and romfs/ (scripts/pack_dump.py package_root): the folder itself, or in OunceCake's layout
+     * program/0/ in it (each content at program/&lt;index&gt;/, with program/ below that when a data content shares the index). Program 0 is the application's own;
+     * a Switch 2 Edition's program/1/ is another program, not read
+     */
+    static File root(File verDir) {
+        for (String r : new String[] {"", "program/0", "program/0/program"}) {
+            File d = r.isEmpty() ? verDir : new File(verDir, r);
+            if (new File(d, "exefs").isDirectory() || new File(d, "romfs").isDirectory()) return d;
+        }
+        return verDir;
     }
 
     private static boolean nonEmpty(File d) {

@@ -34,6 +34,10 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	$(B)/t_audio_spsc
 	$(B)/t_audio_stats
 	$(B)/t_fpslock
+	$(B)/t_oot_wide
+	$(B)/t_dkb_wide
+	$(B)/t_mkw_wide
+	$(B)/t_pkp_aspect
 	$(B)/t_uecvar
 	$(B)/t_audren_work
 	$(B)/t_audren_layout
@@ -77,6 +81,7 @@ run: $(B)/t_language $(B)/t_motion $(B)/t_heap_size $(B)/t_touch $(B)/t_gesture 
 	$(B)/t_android_imgmem
 	$(B)/t_android_zshare
 	$(B)/t_android_texlimit
+	$(B)/t_android_lowram
 	$(B)/t_android_livemap
 	$(B)/t_android_smap
 	$(B)/t_android_texown
@@ -301,6 +306,16 @@ FORCE:
 $(B):
 	mkdir -p $@
 .PHONY: run tsan
+# render_cfg (hle_render.c): the size arithmetic, the largest-buffer rule and the write path, with the test's own row; rt_pool (rt_pool.h): the encoding, the gate and the cap it raises
+$(B)/t_render_cfg: t_render_cfg.c ../hle_render.c ../render_cfg.h ../rt_pool.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wall -Wextra -Werror -Wno-unused-function -Wno-unused-parameter -fsanitize=undefined -I.. $(GINC) -o $@ t_render_cfg.c
+.PHONY: render-cfg
+run: render-cfg
+render-cfg: $(B)/t_render_cfg
+	$(B)/t_render_cfg main $(QUIET)
+	$(B)/t_render_cfg wrong $(QUIET)
+	$(B)/t_render_cfg pool $(QUIET)
+	$(B)/t_render_cfg big $(QUIET)
 $(B)/t_resolution: t_resolution.c ../hle_fpslock.c ../hle.h ../dm.h $(GAME_H) | $(B)
 	clang -O1 -Wall -Werror -Wno-unused-function -fsanitize=undefined -I.. $(GINC) -o $@ t_resolution.c
 .PHONY: resolution
@@ -391,7 +406,7 @@ coverage:
 	LLVM_PROFILE_FILE="$(call cov_profile,$(B)/cov)" $(MAKE) -i B=$(B)/cov SAN="$(COV_FLAGS)" run
 	@$(call cov_export,$(B)/cov)
 # The Android host's pure parts (dm/host/android): resampler, channel map, SPS size, MediaCodec picture layouts; gamepad / touch / sensor mapping
-run: $(B)/t_android_av $(B)/t_android_input $(B)/t_android_shlib $(B)/t_android_spvpatch $(B)/t_android_imgmem $(B)/t_android_zshare $(B)/t_android_texlimit $(B)/t_android_livemap $(B)/t_android_smap $(B)/t_android_mapbudget $(B)/t_android_psogate $(B)/t_android_pckeep $(B)/t_android_pwlist $(B)/t_android_fmtlist $(B)/t_android_place $(B)/t_android_ovl $(B)/t_android_pace $(B)/t_android_skipwarn $(B)/t_android_gmem $(B)/t_android_fpenv $(B)/t_android_soft $(B)/t_android_qsched $(B)/t_android_poolslot $(B)/t_android_prepass $(B)/t_android_tlsig $(B)/t_android_texown $(B)/t_android_gbar $(B)/t_android_memu
+run: $(B)/t_android_av $(B)/t_android_input $(B)/t_android_shlib $(B)/t_android_spvpatch $(B)/t_android_imgmem $(B)/t_android_zshare $(B)/t_android_texlimit $(B)/t_android_lowram $(B)/t_android_livemap $(B)/t_android_smap $(B)/t_android_mapbudget $(B)/t_android_psogate $(B)/t_android_pckeep $(B)/t_android_pwlist $(B)/t_android_fmtlist $(B)/t_android_place $(B)/t_android_ovl $(B)/t_android_pace $(B)/t_android_skipwarn $(B)/t_android_gmem $(B)/t_android_fpenv $(B)/t_android_soft $(B)/t_android_qsched $(B)/t_android_poolslot $(B)/t_android_prepass $(B)/t_android_tlsig $(B)/t_android_texown $(B)/t_android_gbar $(B)/t_android_memu
 $(B)/t_android_av: t_android_av.c ../android/av_android.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. $(WEAK_HOST) -o $@ t_android_av.c
 $(B)/t_android_input: t_android_input.c ../android/input_map.c ../android/input_map.h ../../gfx/vk_android/vka_present_fit.h ../motion_fusion.h ../dm_input.h | $(B)
@@ -411,6 +426,9 @@ $(B)/t_android_zshare: t_android_zshare.c $(VKA)/vka_zshare.h | $(B)
 # The texture cache's limit and eviction order (vka_texlimit.h; vka_tex.c vka_tex_prune_locked)
 $(B)/t_android_texlimit: t_android_texlimit.c $(VKA)/vka_texlimit.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_android_texlimit.c
+# A profile's low-RAM keys: the predicate (profile keys, MemTotal at most 12 GiB, DM_VK_LOW_RAM) and the image cache's ceiling (vka_lowram.h; vka_tex.c vka_low_ram, img_limit_update)
+$(B)/t_android_lowram: t_android_lowram.c $(VKA)/vka_lowram.h $(VKA)/vka_texlimit.h | $(B)
+	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_android_lowram.c
 # The texture cache's live images by storage address (vka_livemap.h; vka_tex.c "Live images": vka_tex_get, gpu_image_over, unref_locked)
 $(B)/t_android_livemap: t_android_livemap.c $(VKA)/vka_livemap.h | $(B)
 	$(CLANG) -O1 -g -Wall -Werror -Wno-unused-function -fsanitize=address,undefined -I.. -o $@ t_android_livemap.c
@@ -507,3 +525,24 @@ net-coop: $(B)/t_net_coop
 	$(B)/t_net_coop invalid
 	$(B)/t_net_coop enabled
 	$(B)/t_net_coop select-race
+
+# The default run covers the seam that needs no module; the module's own targets only where its directory exists
+run: net-eventfd
+ifneq ($(wildcard $(COOP_DIR)/coop.h),)
+run: net-coop
+endif
+
+run: $(B)/t_mkw_wide
+$(B)/t_mkw_wide: t_mkw_wide.c ../android/mkw_wide.c ../android/wide_shape.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -I.. $(GINC) -o $@ t_mkw_wide.c -lm -pthread
+
+run: $(B)/t_oot_wide
+$(B)/t_oot_wide: t_oot_wide.c ../android/oot_wide.c ../android/wide_shape.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -I.. $(GINC) -o $@ t_oot_wide.c -lm -pthread
+
+run: $(B)/t_dkb_wide
+$(B)/t_dkb_wide: t_dkb_wide.c ../android/dkb_wide.c ../android/wide_shape.h ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -I.. $(GINC) -o $@ t_dkb_wide.c -lm -pthread
+run: $(B)/t_pkp_aspect
+$(B)/t_pkp_aspect: t_pkp_aspect.c ../android/pkp_aspect.c ../hle.h ../dm.h $(GAME_H) | $(B)
+	$(CLANG) -O1 -g -Wno-unused-function -I.. $(GINC) -o $@ t_pkp_aspect.c -lm -pthread

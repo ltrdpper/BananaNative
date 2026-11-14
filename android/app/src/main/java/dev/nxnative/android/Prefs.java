@@ -78,6 +78,10 @@ final class Prefs {
     static void padMap(Context c, String titleId, String spec) { put(c, gameKey("pad_map", titleId), spec); }
 
     /** Game settings › Display (per game): false = Fit (keep aspect, letterboxed; the default), true = Stretch to screen (DM_VK_STRETCH=1: the picture fills the display) */
+    /** Settings › Screen rotation: false = Landscape (the default: the game window is locked to landscape on a phone), true = Automatic (no orientation request, the window follows the display, portrait too) */
+    static final String[] ROTATION_NAMES = {"Landscape", "Automatic"};
+    static boolean rotationAuto(Context c) { return of(c).getBoolean("rotation_auto", false); }
+    static void rotationAuto(Context c, boolean on) { of(c).edit().putBoolean("rotation_auto", on).commit(); }
     static final String[] DISPLAY_NAMES = {"Fit (keep aspect)", "Stretch to screen"};
     static boolean stretch(Context c, String titleId) { return of(c).getBoolean(gameKey("stretch", titleId), false); }
     static void stretch(Context c, String titleId, boolean on) { of(c).edit().putBoolean(gameKey("stretch", titleId), on).commit(); }
@@ -139,7 +143,7 @@ final class Prefs {
     /** The recommended frame rate cap as the launcher stores it (Recommend.cap), null for none */
     static Integer recCap(Context c, String titleId) { return Recommend.cap(rec(c, titleId, Recommend.FPS_CAP), limited(titleId)); }
     /** Game settings › Reset to defaults: every choice of the game's own back to the main screen's default (Extra environment's lines stay) */
-    static final String[] GAME_SETTINGS = {"window", "fps_cap", "gpu_driver", "gpu_ts", "pause_return", "ndsr_choice2", "ndsr_sharp", "drs2", "ram_saver", "decouple", "hold60", "full_vegetation", "gsr2_clarity", "dlss_sharp", "dlss_mode", "scene_res", "res_preset", "aspect"};
+    static final String[] GAME_SETTINGS = {"window", "render_pct", "gfx_quality", "fps_cap", "gpu_driver", "gpu_ts", "pause_return", "ndsr_choice2", "ndsr_sharp", "drs2", "ram_saver", "decouple", "hold60", "full_vegetation", "gsr2_clarity", "dlss_sharp", "dlss_mode", "scene_res", "res_preset", "aspect"};
     static void resetGame(Context c, String titleId) {
         SharedPreferences.Editor e = of(c).edit();
         for (String k : GAME_SETTINGS) e.remove(gameKey(k, titleId));
@@ -352,6 +356,26 @@ final class Prefs {
     static String startScene(Context c, String titleId) {
         java.util.List<ResPresets.Preset> ps = ResPresets.presets(Profile.of(titleId));
         return ps.isEmpty() ? sceneRes(c, titleId) : ResPresets.scene(ps, resolutionChoice(c, titleId), sceneRes(c, titleId));
+    }
+
+    /**
+     * Resolution, Upscaling quality and Graphics quality of a game whose profile has a render_cfg row (Profile.renderCfg): the output in "window" (the Game resolution key, so
+     * an older choice carries over), the render scale in "render_pct" and the graphics quality in "gfx_quality" (1 quality, 0 performance), each per game. Read through
+     * Profile.renderSetting (the lazy migration of an older Game resolution value); a pick writes all three
+     */
+    static Profile.Render render(Context c, Profile p, String titleId) {
+        return p.renderSetting(gameWindow(c, titleId), of(c).getInt(gameKey("render_pct", titleId), -1), of(c).getInt(gameKey("gfx_quality", titleId), -1));
+    }
+    static void render(Context c, String titleId, Profile.Render r) {
+        of(c).edit().putString(gameKey("window", titleId), r.out).putInt(gameKey("render_pct", titleId), r.pct).putInt(gameKey("gfx_quality", titleId), r.quality ? 1 : 0).commit();
+    }
+    /** The device class of the host's render target pool choice (vka_low_ram: MemTotal 12 GiB or less; ActivityManager's totalMem is MemTotal) */
+    static boolean lowRam(Context c) {
+        android.app.ActivityManager am = (android.app.ActivityManager) c.getSystemService(Context.ACTIVITY_SERVICE);
+        if (am == null) return true;
+        android.app.ActivityManager.MemoryInfo m = new android.app.ActivityManager.MemoryInfo();
+        am.getMemoryInfo(m);
+        return m.totalMem <= (12L << 30);
     }
 
     /**
